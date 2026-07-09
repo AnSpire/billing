@@ -1,0 +1,747 @@
+# Тесты формализации «Claude Family Pro»
+
+Каждый скоуп-тест фиксирует ожидаемый выход модели через `assertion`, поэтому
+`catala interpret` падает с ненулевым кодом на любой регрессии. Покрыты все ветки
+`if/then/else` модели и все зафиксированные интерпретации двусмысленностей.
+
+> Using Claude_family_pro
+
+## §1.2 — Нормализация токенов
+
+По 1000 токенов каждого типа: 1000·1 + 1000·0.1 + 1000·1.25 + 1000·5 + 1000·5 = 12350.
+
+```catala
+#[test]
+declaration scope TestNormalization:
+  output normalized content decimal
+  n scope Claude_family_pro.TokenNormalization
+scope TestNormalization:
+  definition n.usage equals Claude_family_pro.TokenUsage {
+    -- input_uncached: 1000.0
+    -- input_cache_read: 1000.0
+    -- input_cache_write: 1000.0
+    -- output_regular: 1000.0
+    -- output_thinking: 1000.0
+  }
+  definition normalized equals n.normalized
+  assertion normalized = 12350.0
+```
+
+## §2 — Абонентская плата и включённый объём
+
+Обычный период: полная плата, полный объём, перенос разрешён.
+
+```catala
+#[test]
+declaration scope TestAllowanceNormal:
+  output fee content money
+  output included content decimal
+  output carry_ok content boolean
+  a scope Claude_family_pro.PeriodAllowance
+scope TestAllowanceNormal:
+  definition a.is_termination equals false
+  definition a.active_days equals 30
+  definition a.days_in_month equals 30
+  definition fee equals a.subscription_fee
+  definition included equals a.included_volume
+  definition carry_ok equals a.carryover_allowed
+  assertion fee = $2,490.00
+  assertion included = 12000000.0
+  assertion carry_ok = true
+```
+
+Расторжение в середине (15 из 30 дней): плата и объём пополам, перенос запрещён.
+
+```catala
+#[test]
+declaration scope TestAllowanceTerminationHalf:
+  output fee content money
+  output included content decimal
+  output carry_ok content boolean
+  a scope Claude_family_pro.PeriodAllowance
+scope TestAllowanceTerminationHalf:
+  definition a.is_termination equals true
+  definition a.active_days equals 15
+  definition a.days_in_month equals 30
+  definition fee equals a.subscription_fee
+  definition included equals a.included_volume
+  definition carry_ok equals a.carryover_allowed
+  assertion fee = $1,245.00
+  assertion included = 6000000.0
+  assertion carry_ok = false
+```
+
+Расторжение с округлением вниз до 100 000 НТ (10 из 31 дня):
+объём 12M·10/31 = 3 870 967.7 → вниз до 3 800 000; плата 2490·10/31 = 803.2258 → 803.22.
+
+```catala
+#[test]
+declaration scope TestAllowanceTerminationRounding:
+  output fee content money
+  output included content decimal
+  a scope Claude_family_pro.PeriodAllowance
+scope TestAllowanceTerminationRounding:
+  definition a.is_termination equals true
+  definition a.active_days equals 10
+  definition a.days_in_month equals 31
+  definition fee equals a.subscription_fee
+  definition included equals a.included_volume
+  assertion included = 3800000.0
+  assertion fee = $803.22
+```
+
+## §3.3 + §4 — Овераж и перенос остатка
+
+Под включённым объёмом, остаток переносится (не капнут): потребление 10M, перенос 2M.
+
+```catala
+#[test]
+declaration scope TestOverageUnderIncluded:
+  output overage content decimal
+  output carry content decimal
+  o scope Claude_family_pro.OverageComputation
+scope TestOverageUnderIncluded:
+  definition o.total_consumption equals 10000000.0
+  definition o.carried_balance equals 0.0
+  definition o.included_volume equals 12000000.0
+  definition o.carryover_allowed equals true
+  definition overage equals o.overage
+  definition carry equals o.carryover_to_next
+  assertion overage = 0.0
+  assertion carry = 2000000.0
+```
+
+Перенос капается на 20% (потребление 8M → неизрасходовано 4M, перенос = 2.4M).
+
+```catala
+#[test]
+declaration scope TestCarryoverCapped:
+  output carry content decimal
+  o scope Claude_family_pro.OverageComputation
+scope TestCarryoverCapped:
+  definition o.total_consumption equals 8000000.0
+  definition o.carried_balance equals 0.0
+  definition o.included_volume equals 12000000.0
+  definition o.carryover_allowed equals true
+  definition carry equals o.carryover_to_next
+  assertion carry = 2400000.0
+```
+
+Последовательное списание: сначала перенос 1M, потом 12M, овераж = 14−12 = 2M.
+
+```catala
+#[test]
+declaration scope TestOverageWithCarry:
+  output overage content decimal
+  output carry content decimal
+  o scope Claude_family_pro.OverageComputation
+scope TestOverageWithCarry:
+  definition o.total_consumption equals 15000000.0
+  definition o.carried_balance equals 1000000.0
+  definition o.included_volume equals 12000000.0
+  definition o.carryover_allowed equals true
+  definition overage equals o.overage
+  definition carry equals o.carryover_to_next
+  assertion overage = 2000000.0
+  assertion carry = 0.0
+```
+
+Период расторжения: перенос не образуется (§4.3), даже если объём не выбран.
+
+```catala
+#[test]
+declaration scope TestNoCarryoverOnTermination:
+  output carry content decimal
+  o scope Claude_family_pro.OverageComputation
+scope TestNoCarryoverOnTermination:
+  definition o.total_consumption equals 5000000.0
+  definition o.carried_balance equals 0.0
+  definition o.included_volume equals 6000000.0
+  definition o.carryover_allowed equals false
+  definition carry equals o.carryover_to_next
+  assertion carry = 0.0
+```
+
+## §3.1 + §5.1–5.3 — Тарификация овеража и скидки
+
+Диапазон 1 (0–2M): скидки нет. Овераж 1M → gross $0.42/1000·1M = $420, скидка $0.
+
+```catala
+#[test]
+declaration scope TestChargeTier1:
+  output gross content money
+  output disc content money
+  output after content money
+  c scope Claude_family_pro.OverageCharge
+scope TestChargeTier1:
+  definition c.overage equals 1000000.0
+  definition c.fair_use_excess equals 0.0
+  definition gross equals c.gross_charge
+  definition disc equals c.tier_discount
+  definition after equals c.charge_after_tier
+  assertion gross = $420.00
+  assertion disc = $0.00
+  assertion after = $420.00
+```
+
+Диапазон 2 (2–10M): овераж 7M → gross $2940, скидка 10% на 5M = $210, итог $2730.
+
+```catala
+#[test]
+declaration scope TestChargeTier2:
+  output gross content money
+  output disc content money
+  output after content money
+  c scope Claude_family_pro.OverageCharge
+scope TestChargeTier2:
+  definition c.overage equals 7000000.0
+  definition c.fair_use_excess equals 0.0
+  definition gross equals c.gross_charge
+  definition disc equals c.tier_discount
+  definition after equals c.charge_after_tier
+  assertion gross = $2,940.00
+  assertion disc = $210.00
+  assertion after = $2,730.00
+```
+
+Диапазон 3 (>10M): овераж 12M → gross $5040, скидка 8M·10% + 2M·18% = $487.20.
+
+```catala
+#[test]
+declaration scope TestChargeTier3:
+  output gross content money
+  output disc content money
+  output after content money
+  c scope Claude_family_pro.OverageCharge
+scope TestChargeTier3:
+  definition c.overage equals 12000000.0
+  definition c.fair_use_excess equals 0.0
+  definition gross equals c.gross_charge
+  definition disc equals c.tier_discount
+  definition after equals c.charge_after_tier
+  assertion gross = $5,040.00
+  assertion disc = $487.20
+  assertion after = $4,552.80
+```
+
+Порог лояльности (§5.2): овераж 25M ≥ 20M → единая 25%. gross $10500, скидка $2625.
+
+```catala
+#[test]
+declaration scope TestChargeLoyalty:
+  output gross content money
+  output disc content money
+  output after content money
+  c scope Claude_family_pro.OverageCharge
+scope TestChargeLoyalty:
+  definition c.overage equals 25000000.0
+  definition c.fair_use_excess equals 0.0
+  definition gross equals c.gross_charge
+  definition disc equals c.tier_discount
+  definition after equals c.charge_after_tier
+  assertion gross = $10,500.00
+  assertion disc = $2,625.00
+  assertion after = $7,875.00
+```
+
+Fair use (§5.3): овераж 25M, из них 5M — потребление Участника свыше 30M (полная
+ставка, без скидок). Скидочная база 20M, лояльность 25% → скидка $2100, итог $8400.
+
+```catala
+#[test]
+declaration scope TestChargeFairUse:
+  output gross content money
+  output disc content money
+  output after content money
+  c scope Claude_family_pro.OverageCharge
+scope TestChargeFairUse:
+  definition c.overage equals 25000000.0
+  definition c.fair_use_excess equals 5000000.0
+  definition gross equals c.gross_charge
+  definition disc equals c.tier_discount
+  definition after equals c.charge_after_tier
+  assertion gross = $10,500.00
+  assertion disc = $2,100.00
+  assertion after = $8,400.00
+```
+
+## §5.4–5.5 — Стаж и реферальная
+
+Только стаж (13-й период): 5% на $2730 = $136.50.
+
+```catala
+#[test]
+declaration scope TestTenureOnly:
+  output combined content money
+  d scope Claude_family_pro.LoyaltyReferralDiscount
+scope TestTenureOnly:
+  definition d.charge_after_tier equals $2,730.00
+  definition d.subscription_fee equals $2,490.00
+  definition d.consecutive_paid_periods equals 13
+  definition d.referral_active equals false
+  definition combined equals d.combined_discount
+  assertion combined = $136.50
+```
+
+Только реферальная: 20% на $2490 = $498.
+
+```catala
+#[test]
+declaration scope TestReferralOnly:
+  output combined content money
+  d scope Claude_family_pro.LoyaltyReferralDiscount
+scope TestReferralOnly:
+  definition d.charge_after_tier equals $2,730.00
+  definition d.subscription_fee equals $2,490.00
+  definition d.consecutive_paid_periods equals 5
+  definition d.referral_active equals true
+  definition combined equals d.combined_discount
+  assertion combined = $498.00
+```
+
+Оба основания (§5.5 — бо́льшая): max($136.50, $498) = $498.
+
+```catala
+#[test]
+declaration scope TestTenureAndReferral:
+  output combined content money
+  d scope Claude_family_pro.LoyaltyReferralDiscount
+scope TestTenureAndReferral:
+  definition d.charge_after_tier equals $2,730.00
+  definition d.subscription_fee equals $2,490.00
+  definition d.consecutive_paid_periods equals 13
+  definition d.referral_active equals true
+  definition combined equals d.combined_discount
+  assertion combined = $498.00
+```
+
+Ни одного основания: $0.
+
+```catala
+#[test]
+declaration scope TestNoLoyaltyDiscount:
+  output combined content money
+  d scope Claude_family_pro.LoyaltyReferralDiscount
+scope TestNoLoyaltyDiscount:
+  definition d.charge_after_tier equals $2,730.00
+  definition d.subscription_fee equals $2,490.00
+  definition d.consecutive_paid_periods equals 5
+  definition d.referral_active equals false
+  definition combined equals d.combined_discount
+  assertion combined = $0.00
+```
+
+## §5.6 + §2.3 — Потолок скидок и минимум
+
+Без ограничений: скидка проходит, pretax = 2490 + 2940 − 210 = $5220.
+
+```catala
+#[test]
+declaration scope TestPretaxNormal:
+  output total_disc content money
+  output pretax content money
+  s scope Claude_family_pro.DiscountCapAndTotal
+scope TestPretaxNormal:
+  definition s.subscription_fee equals $2,490.00
+  definition s.gross_overage equals $2,940.00
+  definition s.tier_discount equals $210.00
+  definition s.combined_loyalty_referral equals $0.00
+  definition s.is_termination equals false
+  definition total_disc equals s.total_discount
+  definition pretax equals s.pretax
+  assertion total_disc = $210.00
+  assertion pretax = $5,220.00
+```
+
+Потолок §5.6 срезает скидку И минимум §2.3 поднимает до платы: скидка 5000
+режется до 30%·(2490+1000)=$1047, pretax_raw=2443 < 2490 → $2490.
+
+```catala
+#[test]
+declaration scope TestCapAndFloor:
+  output total_disc content money
+  output pretax content money
+  s scope Claude_family_pro.DiscountCapAndTotal
+scope TestCapAndFloor:
+  definition s.subscription_fee equals $2,490.00
+  definition s.gross_overage equals $1,000.00
+  definition s.tier_discount equals $5,000.00
+  definition s.combined_loyalty_referral equals $0.00
+  definition s.is_termination equals false
+  definition total_disc equals s.total_discount
+  definition pretax equals s.pretax
+  assertion total_disc = $1,047.00
+  assertion pretax = $2,490.00
+```
+
+Минимум §2.3 без овеража: реферальная скидка $498 срезается полом до платы $2490.
+
+```catala
+#[test]
+declaration scope TestFloorNoOverage:
+  output pretax content money
+  s scope Claude_family_pro.DiscountCapAndTotal
+scope TestFloorNoOverage:
+  definition s.subscription_fee equals $2,490.00
+  definition s.gross_overage equals $0.00
+  definition s.tier_discount equals $0.00
+  definition s.combined_loyalty_referral equals $498.00
+  definition s.is_termination equals false
+  definition pretax equals s.pretax
+  assertion pretax = $2,490.00
+```
+
+Расторжение — минимум §2.3 НЕ применяется: pretax = прораченная плата $1245.
+
+```catala
+#[test]
+declaration scope TestNoFloorOnTermination:
+  output pretax content money
+  s scope Claude_family_pro.DiscountCapAndTotal
+scope TestNoFloorOnTermination:
+  definition s.subscription_fee equals $1,245.00
+  definition s.gross_overage equals $0.00
+  definition s.tier_discount equals $0.00
+  definition s.combined_loyalty_referral equals $0.00
+  definition s.is_termination equals true
+  definition pretax equals s.pretax
+  assertion pretax = $1,245.00
+```
+
+## §7 — Компенсация SLA (границы порогов)
+
+< 95% → 100% платы.
+
+```catala
+#[test]
+declaration scope TestSlaFull:
+  output comp content money
+  s scope Claude_family_pro.SLACompensation
+scope TestSlaFull:
+  definition s.availability equals 0.94
+  definition s.subscription_fee equals $2,490.00
+  definition comp equals s.compensation
+  assertion comp = $2,490.00
+```
+
+Граница 95.0% (в диапазоне ≥95%) → 30%.
+
+```catala
+#[test]
+declaration scope TestSlaMidBoundary:
+  output comp content money
+  s scope Claude_family_pro.SLACompensation
+scope TestSlaMidBoundary:
+  definition s.availability equals 0.95
+  definition s.subscription_fee equals $2,490.00
+  definition comp equals s.compensation
+  assertion comp = $747.00
+```
+
+97% → 30%.
+
+```catala
+#[test]
+declaration scope TestSlaMid:
+  output comp content money
+  s scope Claude_family_pro.SLACompensation
+scope TestSlaMid:
+  definition s.availability equals 0.97
+  definition s.subscription_fee equals $2,490.00
+  definition comp equals s.compensation
+  assertion comp = $747.00
+```
+
+99.4% → 10%.
+
+```catala
+#[test]
+declaration scope TestSlaLow:
+  output comp content money
+  s scope Claude_family_pro.SLACompensation
+scope TestSlaLow:
+  definition s.availability equals 0.994
+  definition s.subscription_fee equals $2,490.00
+  definition comp equals s.compensation
+  assertion comp = $249.00
+```
+
+Граница 99.5% (порог строгий «< 99.5%») → компенсации нет.
+
+```catala
+#[test]
+declaration scope TestSlaBoundaryNone:
+  output comp content money
+  s scope Claude_family_pro.SLACompensation
+scope TestSlaBoundaryNone:
+  definition s.availability equals 0.995
+  definition s.subscription_fee equals $2,490.00
+  definition comp equals s.compensation
+  assertion comp = $0.00
+```
+
+## §8 — НДС и итог
+
+Обычный: taxable $5220, НДС 20% = $1044, итог $6264.
+
+```catala
+#[test]
+declaration scope TestFinalNormal:
+  output vat content money
+  output total content money
+  f scope Claude_family_pro.FinalBill
+scope TestFinalNormal:
+  definition f.pretax equals $5,220.00
+  definition f.compensation equals $0.00
+  definition f.vat_rate equals 0.20
+  definition vat equals f.vat_amount
+  definition total equals f.total_due
+  assertion vat = $1,044.00
+  assertion total = $6,264.00
+```
+
+Компенсация уменьшает базу НДС: taxable 2490−249 = 2241, итог 2241·1.2 = $2689.20.
+
+```catala
+#[test]
+declaration scope TestFinalWithComp:
+  output total content money
+  f scope Claude_family_pro.FinalBill
+scope TestFinalWithComp:
+  definition f.pretax equals $2,490.00
+  definition f.compensation equals $249.00
+  definition f.vat_rate equals 0.20
+  definition total equals f.total_due
+  assertion total = $2,689.20
+```
+
+Компенсация больше пред-налоговой суммы: база не уходит в минус → итог $0.
+
+```catala
+#[test]
+declaration scope TestFinalCompExceeds:
+  output total content money
+  f scope Claude_family_pro.FinalBill
+scope TestFinalCompExceeds:
+  definition f.pretax equals $2,490.00
+  definition f.compensation equals $2,490.00
+  definition f.vat_rate equals 0.20
+  definition total equals f.total_due
+  assertion total = $0.00
+```
+
+## §6 — Разнесение по Участникам
+
+Инвариант всех тестов разнесения: сумма всех начислений = начислению Группы.
+
+Чистое деление (без остатка, без детей): $99 на 60M/30M/10M → A=$29.70, B=$9.90,
+Владелец = 99 − 39.60 = $59.40.
+
+```catala
+#[test]
+declaration scope TestDistClean:
+  output owner content money
+  output alloc_sum content money
+  output a_charge content money
+  d scope Claude_family_pro.ParticipantDistribution
+scope TestDistClean:
+  definition d.group_charge equals $99.00
+  definition d.members equals [
+    Claude_family_pro.Member{-- member_id: 1 -- normalized: 60000000.0 -- is_child: false -- is_owner: true};
+    Claude_family_pro.Member{-- member_id: 2 -- normalized: 30000000.0 -- is_child: false -- is_owner: false};
+    Claude_family_pro.Member{-- member_id: 3 -- normalized: 10000000.0 -- is_child: false -- is_owner: false}
+  ]
+  definition owner equals d.owner_charge
+  definition alloc_sum equals Money.sum of (map each c among d.allocations to c.charge)
+  definition a_charge equals
+    Money.sum of (map each c among d.allocations to
+      (if c.member_id = 2 then c.charge else $0.00))
+  assertion owner = $59.40
+  assertion a_charge = $29.70
+  assertion alloc_sum = $99.00
+```
+
+Остаток округления вниз относится на Владельца: $100 на три равные доли → каждому
+$33.33, Владелец забирает остаток $0.01 → $33.34.
+
+```catala
+#[test]
+declaration scope TestDistRemainder:
+  output owner content money
+  output alloc_sum content money
+  d scope Claude_family_pro.ParticipantDistribution
+scope TestDistRemainder:
+  definition d.group_charge equals $100.00
+  definition d.members equals [
+    Claude_family_pro.Member{-- member_id: 1 -- normalized: 1.0 -- is_child: false -- is_owner: true};
+    Claude_family_pro.Member{-- member_id: 2 -- normalized: 1.0 -- is_child: false -- is_owner: false};
+    Claude_family_pro.Member{-- member_id: 3 -- normalized: 1.0 -- is_child: false -- is_owner: false}
+  ]
+  definition owner equals d.owner_charge
+  definition alloc_sum equals Money.sum of (map each c among d.allocations to c.charge)
+  assertion owner = $33.34
+  assertion alloc_sum = $100.00
+```
+
+Детский аккаунт (§6.3): его доля относится на Владельца. $90, доли 10M/20M(дет)/10M
+→ обычный B = 90·10/40 = $22.50, ребёнок $0, Владелец = 90 − 22.50 = $67.50.
+
+```catala
+#[test]
+declaration scope TestDistChild:
+  output owner content money
+  output child_charge content money
+  output alloc_sum content money
+  d scope Claude_family_pro.ParticipantDistribution
+scope TestDistChild:
+  definition d.group_charge equals $90.00
+  definition d.members equals [
+    Claude_family_pro.Member{-- member_id: 1 -- normalized: 10000000.0 -- is_child: false -- is_owner: true};
+    Claude_family_pro.Member{-- member_id: 2 -- normalized: 20000000.0 -- is_child: true -- is_owner: false};
+    Claude_family_pro.Member{-- member_id: 3 -- normalized: 10000000.0 -- is_child: false -- is_owner: false}
+  ]
+  definition owner equals d.owner_charge
+  definition child_charge equals
+    Money.sum of (map each c among d.allocations to
+      (if c.member_id = 2 then c.charge else $0.00))
+  definition alloc_sum equals Money.sum of (map each c among d.allocations to c.charge)
+  assertion child_charge = $0.00
+  assertion owner = $67.50
+  assertion alloc_sum = $90.00
+```
+
+Нулевое потребление: всё начисление на Владельца (деления на ноль нет).
+
+```catala
+#[test]
+declaration scope TestDistZero:
+  output owner content money
+  d scope Claude_family_pro.ParticipantDistribution
+scope TestDistZero:
+  definition d.group_charge equals $50.00
+  definition d.members equals [
+    Claude_family_pro.Member{-- member_id: 1 -- normalized: 0.0 -- is_child: false -- is_owner: true};
+    Claude_family_pro.Member{-- member_id: 2 -- normalized: 0.0 -- is_child: false -- is_owner: false}
+  ]
+  definition owner equals d.owner_charge
+  assertion owner = $50.00
+```
+
+## Сквозной расчёт GroupPeriodBill
+
+Обычный период: Группа 8M+6M = 14M, овераж 2M, плата $2490, НДС 20%.
+gross $840, скидок нет, pretax $3330, НДС $666, итог $3996; разнос $1902.86 / $1427.14.
+
+```catala
+#[test]
+declaration scope TestEndToEndNormal:
+  output overage content decimal
+  output pretax content money
+  output total content money
+  output owner content money
+  g scope Claude_family_pro.GroupPeriodBill
+scope TestEndToEndNormal:
+  definition g.members equals [
+    Claude_family_pro.Member{-- member_id: 1 -- normalized: 8000000.0 -- is_child: false -- is_owner: true};
+    Claude_family_pro.Member{-- member_id: 2 -- normalized: 6000000.0 -- is_child: false -- is_owner: false}
+  ]
+  definition g.carried_balance equals 0.0
+  definition g.is_termination equals false
+  definition g.active_days equals 30
+  definition g.days_in_month equals 30
+  definition g.consecutive_paid_periods equals 5
+  definition g.referral_active equals false
+  definition g.availability equals 0.999
+  definition g.vat_rate equals 0.20
+  definition overage equals g.overage
+  definition pretax equals g.pretax
+  definition total equals g.total_due
+  definition owner equals g.owner_charge
+  assertion overage = 2000000.0
+  assertion pretax = $3,330.00
+  assertion total = $3,996.00
+  assertion owner = $1,902.86
+```
+
+Крупный период: Владелец 35M + детский 5M. Овераж 28M (≥20M, лояльность), fair use
+5M, стаж (13-й период) и реферальная → берётся реферальная $498, SLA 97% → $747.
+gross $11760, скидка $2415+$498=$2913, pretax $11337, НДС $2118, итог $12708;
+ребёнок в разнос не идёт → всё на Владельца $11337.
+
+```catala
+#[test]
+declaration scope TestEndToEndLoyalty:
+  output overage content decimal
+  output gross content money
+  output total_disc content money
+  output pretax content money
+  output comp content money
+  output total content money
+  output owner content money
+  g scope Claude_family_pro.GroupPeriodBill
+scope TestEndToEndLoyalty:
+  definition g.members equals [
+    Claude_family_pro.Member{-- member_id: 1 -- normalized: 35000000.0 -- is_child: false -- is_owner: true};
+    Claude_family_pro.Member{-- member_id: 2 -- normalized: 5000000.0 -- is_child: true -- is_owner: false}
+  ]
+  definition g.carried_balance equals 0.0
+  definition g.is_termination equals false
+  definition g.active_days equals 30
+  definition g.days_in_month equals 30
+  definition g.consecutive_paid_periods equals 13
+  definition g.referral_active equals true
+  definition g.availability equals 0.97
+  definition g.vat_rate equals 0.20
+  definition overage equals g.overage
+  definition gross equals g.gross_overage
+  definition total_disc equals g.total_discount
+  definition pretax equals g.pretax
+  definition comp equals g.compensation
+  definition total equals g.total_due
+  definition owner equals g.owner_charge
+  assertion overage = 28000000.0
+  assertion gross = $11,760.00
+  assertion total_disc = $2,913.00
+  assertion pretax = $11,337.00
+  assertion comp = $747.00
+  assertion total = $12,708.00
+  assertion owner = $11,337.00
+```
+
+Период расторжения: 15 из 30 дней, потребление 5M < прораченного объёма 6M.
+Плата $1245, овераж $0, перенос $0, минимум §2.3 не действует; НДС 20% → итог $1494;
+разнос $747 (Владелец) / $498 (Участник 2).
+
+```catala
+#[test]
+declaration scope TestEndToEndTermination:
+  output overage content decimal
+  output carry content decimal
+  output pretax content money
+  output total content money
+  output owner content money
+  g scope Claude_family_pro.GroupPeriodBill
+scope TestEndToEndTermination:
+  definition g.members equals [
+    Claude_family_pro.Member{-- member_id: 1 -- normalized: 3000000.0 -- is_child: false -- is_owner: true};
+    Claude_family_pro.Member{-- member_id: 2 -- normalized: 2000000.0 -- is_child: false -- is_owner: false}
+  ]
+  definition g.carried_balance equals 0.0
+  definition g.is_termination equals true
+  definition g.active_days equals 15
+  definition g.days_in_month equals 30
+  definition g.consecutive_paid_periods equals 5
+  definition g.referral_active equals false
+  definition g.availability equals 0.999
+  definition g.vat_rate equals 0.20
+  definition overage equals g.overage
+  definition carry equals g.carryover_to_next
+  definition pretax equals g.pretax
+  definition total equals g.total_due
+  definition owner equals g.owner_charge
+  assertion overage = 0.0
+  assertion carry = 0.0
+  assertion pretax = $1,245.00
+  assertion total = $1,494.00
+  assertion owner = $747.00
+```

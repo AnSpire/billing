@@ -1,0 +1,594 @@
+# Договор-оферта «Claude Family Pro» — формализация на Catala
+
+> Module Claude_family_pro
+
+Источник: `Case.md` — публичная оферта «Claude Family Pro», версия документа 3.2,
+действует с 01.09.2026, юрисдикция RU.
+
+Здесь формализована **вычислимая** часть оферты: пересчёт токенов в
+нормализованные единицы (§1.2), абонентская плата и её пропорциональный пересчёт
+при расторжении (§2), сверхлимитное потребление и перенос остатка (§3–4), шкала
+скидок на овераж с порогом лояльности и fair-use (§5.1–5.3), скидки за стаж и
+реферальная (§5.4–5.5), совокупный потолок скидок и минимальная сумма (§5.6, §2.3),
+разнесение начисления по Участникам (§6), компенсация за недоступность (§7) и НДС
+(§8). Прозаические пункты (порядок акцепта, реквизиты, §9 об изменении условий как
+процедура) в код не тащим — они контекст, а не формула.
+
+## Провенанс параметров (§9.1 — фиксируются на дату акцепта)
+
+Все ставки, пороги и коэффициенты этого договора собраны в **одну** структуру
+`Tariff` и **одну** константу `const_tariff`. Это точка провенанса: другой договор
+(другая версия оферты) = те же поля с другими значениями. Каждый скоуп получает
+`context tariff`, по умолчанию равный `const_tariff`, поэтому тот же код обслуживает
+другой экземпляр договора переопределением `tariff`.
+
+```catala
+declaration structure Tariff:
+  # §1.2 — коэффициенты пересчёта в нормализованные токены (НТ)
+  data coeff_input_uncached content decimal
+  data coeff_cache_read content decimal
+  data coeff_cache_write content decimal
+  data coeff_output content decimal
+  data coeff_output_thinking content decimal
+  # §1.4 — включённый объём на Группу за период, НТ
+  data included_volume content decimal
+  # §2.1 — абонентская плата за период
+  data subscription_fee content money
+  # §2.2 — шаг округления вниз включённого объёма при пропорции, НТ
+  data included_rounding_step content decimal
+  # §3.1 — ставка овеража за 1000 НТ
+  data overage_rate_per_1000 content money
+  # §4.1 — доля включённого объёма, переносимая на следующий период
+  data carryover_cap_ratio content decimal
+  # §5.1 — маржинальная шкала скидок: верхние границы диапазонов (НТ) и ставки
+  data tier1_upper content decimal
+  data tier2_upper content decimal
+  data tier2_discount content decimal
+  data tier3_discount content decimal
+  # §5.2 — порог лояльности объёма и единая скидка
+  data loyalty_threshold content decimal
+  data loyalty_discount content decimal
+  # §5.3 — потолок fair use на одного Участника, НТ
+  data fair_use_cap content decimal
+  # §5.4 — стаж: минимальный номер периода и добавочная скидка
+  data tenure_min_periods content integer
+  data tenure_discount content decimal
+  # §5.5 — реферальная скидка на абонентскую плату
+  data referral_discount content decimal
+  # §5.6 — потолок совокупной скидки
+  data max_total_discount_ratio content decimal
+  # §7.1 — пороги доступности SLA и доли компенсации от абонентской платы
+  data sla_full_threshold content decimal
+  data sla_mid_threshold content decimal
+  data sla_low_threshold content decimal
+  data sla_mid_ratio content decimal
+  data sla_low_ratio content decimal
+```
+
+Конкретные значения оферты «Claude Family Pro» v3.2:
+
+```catala
+declaration const_tariff content Tariff
+  equals Tariff {
+    -- coeff_input_uncached: 1.0
+    -- coeff_cache_read: 0.1
+    -- coeff_cache_write: 1.25
+    -- coeff_output: 5.0
+    -- coeff_output_thinking: 5.0
+    -- included_volume: 12000000.0
+    -- subscription_fee: $2,490.00
+    -- included_rounding_step: 100000.0
+    -- overage_rate_per_1000: $0.42
+    -- carryover_cap_ratio: 0.20
+    -- tier1_upper: 2000000.0
+    -- tier2_upper: 10000000.0
+    -- tier2_discount: 0.10
+    -- tier3_discount: 0.18
+    -- loyalty_threshold: 20000000.0
+    -- loyalty_discount: 0.25
+    -- fair_use_cap: 30000000.0
+    -- tenure_min_periods: 13
+    -- tenure_discount: 0.05
+    -- referral_discount: 0.20
+    -- max_total_discount_ratio: 0.30
+    -- sla_full_threshold: 0.95
+    -- sla_mid_threshold: 0.98
+    -- sla_low_threshold: 0.995
+    -- sla_mid_ratio: 0.30
+    -- sla_low_ratio: 0.10
+  }
+```
+
+## Вспомогательные величины и типы
+
+`floor_to_kopeck` округляет сумму в рублях (decimal) **вниз** до копейки. Важно:
+умножение `money * decimal` в Catala округляет к **ближайшей** копейке, поэтому
+`floor(money * decimal)` бесполезен — округление уже произошло. Для §2.2 и §6.2
+нужен детерминированный round-down, поэтому флорим именно **decimal-произведение**
+до перевода в деньги. Все суммы неотрицательны, значит `round_by_default` (floor
+к −∞) = round-down до копейки.
+
+```catala
+declaration floor_to_kopeck content money depends on rub content decimal
+  equals money of ((Decimal.round_by_default of (rub * 100.0)) / 100.0)
+```
+
+`Member` — Участник Группы с уже посчитанным нормализованным потреблением за
+период (НТ). `MemberCharge` — начисление на конкретного Участника после разнесения.
+
+```catala
+declaration structure Member:
+  data member_id content integer
+  data normalized content decimal
+  data is_child content boolean
+  data is_owner content boolean
+
+declaration structure MemberCharge:
+  data member_id content integer
+  data charge content money
+```
+
+## §1.2 — Пересчёт в нормализованные токены (НТ)
+
+`TokenUsage` — сырое потребление по типам токенов за период (по Группе или по
+Участнику). Нормализация — линейная свёртка по коэффициентам §1.2.
+
+*«Нормализованный токен (НТ) — расчётная единица»*: input uncached ×1.0, cache
+read ×0.1, cache write ×1.25, output ×5.0, output extended thinking ×5.0.
+
+```catala
+declaration structure TokenUsage:
+  data input_uncached content decimal
+  data input_cache_read content decimal
+  data input_cache_write content decimal
+  data output_regular content decimal
+  data output_thinking content decimal
+
+declaration scope TokenNormalization:
+  context tariff content Tariff
+  input usage content TokenUsage
+  output normalized content decimal
+
+scope TokenNormalization:
+  definition tariff equals const_tariff
+  definition normalized equals
+    usage.input_uncached * tariff.coeff_input_uncached
+    + usage.input_cache_read * tariff.coeff_cache_read
+    + usage.input_cache_write * tariff.coeff_cache_write
+    + usage.output_regular * tariff.coeff_output
+    + usage.output_thinking * tariff.coeff_output_thinking
+```
+
+## §2.1–2.2 — Абонентская плата и пропорциональный пересчёт
+
+*«Абонентская плата … 2 490 ₽ … списывается авансом»*. При подключении/отключении
+Участника в середине периода плата **не** пересчитывается (это не наш вход — мы
+считаем период целиком). При **расторжении** (§2.2) плата пересчитывается
+пропорционально числу полных дней действия, а Включённый объём пересчитывается
+пропорционально и **округляется вниз до 100 000 НТ**. В таком периоде перенос
+остатка не образуется (§4.3), что выражено флагом `carryover_allowed`.
+
+Фиксация интерпретации: при расторжении абонентская плата после пропорции
+округляется вниз до копейки (`floor_kopeck`) — договор способ округления платы не
+задаёт, выбираем round-down, единообразно с §6.2.
+
+Входы `active_days` (полные дни действия договора в периоде) и `days_in_month`
+приходят от **рантайма** (календарь периода, дата расторжения). `is_termination`
+= период завершается расторжением договора.
+
+```catala
+declaration scope PeriodAllowance:
+  context tariff content Tariff
+  input is_termination content boolean
+  input active_days content integer
+  input days_in_month content integer
+  output subscription_fee content money
+  output included_volume content decimal
+  output carryover_allowed content boolean
+
+scope PeriodAllowance:
+  definition tariff equals const_tariff
+  definition subscription_fee equals
+    if is_termination then
+      floor_to_kopeck of ((decimal of tariff.subscription_fee)
+        * ((decimal of active_days) / (decimal of days_in_month)))
+    else tariff.subscription_fee
+  definition included_volume equals
+    if is_termination then
+      (Decimal.round_by_default of
+        ((tariff.included_volume
+          * ((decimal of active_days) / (decimal of days_in_month)))
+         / tariff.included_rounding_step))
+      * tariff.included_rounding_step
+    else tariff.included_volume
+  definition carryover_allowed equals not is_termination
+```
+
+## §3.3 + §4 — Сверхлимитное потребление и перенос остатка
+
+Порядок списания в периоде строго последовательный (§3.3): сначала
+**перенесённый остаток прошлого периода**, затем **включённый объём текущего
+периода**, затем **овераж**. Перенос на следующий период (§4.1) — неизрасходованный
+включённый объём, но не более 20% от включённого объёма. Перенесённый остаток,
+который мы получаем на вход, сам не переносится повторно (§4.2) — это состояние,
+которым владеет рантайм.
+
+Вход `carried_balance` — **состояние рантайма**: неизрасходованный включённый
+объём, перенесённый с прошлого периода (НТ). Рантайм хранит его между периодами,
+подаёт на вход и обнуляет по §4.2. `total_consumption` — суммарное нормализованное
+потребление Группы за период (НТ), включая потребление детских аккаунтов.
+
+```catala
+declaration scope OverageComputation:
+  context tariff content Tariff
+  input total_consumption content decimal
+  input carried_balance content decimal
+  input included_volume content decimal
+  input carryover_allowed content boolean
+  internal consumption_after_carry content decimal
+  internal included_unused content decimal
+  output overage content decimal
+  output carryover_to_next content decimal
+
+scope OverageComputation:
+  definition tariff equals const_tariff
+  definition consumption_after_carry equals
+    if total_consumption <= carried_balance then 0.0
+    else total_consumption - carried_balance
+  definition overage equals
+    if consumption_after_carry <= included_volume then 0.0
+    else consumption_after_carry - included_volume
+  definition included_unused equals
+    if consumption_after_carry >= included_volume then 0.0
+    else included_volume - consumption_after_carry
+  definition carryover_to_next equals
+    if not carryover_allowed then 0.0
+    else
+      (if included_unused <= (tariff.carryover_cap_ratio * included_volume)
+       then included_unused
+       else tariff.carryover_cap_ratio * included_volume)
+```
+
+## §3.1 + §5.1–5.3 — Тарификация овеража и базовые скидки
+
+Ставка §3.1 — 0.42 ₽ за 1000 НТ. Скидки §5 применяются к оверажу, **кроме**
+части fair use (§5.3): потребление отдельного Участника свыше 30 000 000 НТ
+тарифицируется по полной ставке без скидок. Эту исключённую часть считаем как
+Σ по Участникам max(0, потребление − 30 000 000) и подаём как `fair_use_excess`.
+
+Выбор скидочной ветки:
+- если совокупный овераж Группы ≥ 20 000 000 НТ (§5.2) — единая скидка 25% на всю
+  скидочную часть (§5.1 не применяется);
+- иначе — маржинальная шкала §5.1: 0% на 0–2 млн, 10% на 2–10 млн, 18% на >10 млн.
+
+Фиксация интерпретации (§5.1 vs §5.3): маржинальные диапазоны отсчитываются от 0
+по **скидочной** части овеража (овераж минус fair-use), а не по полному оверажу.
+Fair-use-часть полностью вынута из скидочной базы и не занимает место в диапазонах.
+Это единственная реализуемая непротиворечивая трактовка «скидка к части овеража,
+попадающей в диапазон» вместе с исключением §5.3.
+
+`tier_discount_nt` — вес скидки §5.1 в НТ для базы `x`: сумма (часть в диапазоне)
+× (ставка диапазона). Умножив на ставку за НТ, получаем скидку в рублях.
+
+```catala
+declaration tier_discount_nt content decimal
+  depends on x content decimal, t content Tariff
+  equals
+    (if x <= t.tier1_upper then 0.0
+     else (if x <= t.tier2_upper then x - t.tier1_upper
+           else t.tier2_upper - t.tier1_upper))
+      * t.tier2_discount
+    +
+    (if x <= t.tier2_upper then 0.0 else x - t.tier2_upper)
+      * t.tier3_discount
+
+declaration scope OverageCharge:
+  context tariff content Tariff
+  input overage content decimal
+  input fair_use_excess content decimal
+  internal rate_per_nt content decimal
+  internal discountable_nt content decimal
+  output gross_charge content money
+  output tier_discount content money
+  output charge_after_tier content money
+
+scope OverageCharge:
+  definition tariff equals const_tariff
+  definition rate_per_nt equals (decimal of tariff.overage_rate_per_1000) / 1000.0
+  definition discountable_nt equals
+    if overage <= fair_use_excess then 0.0 else overage - fair_use_excess
+  definition gross_charge equals money of (overage * rate_per_nt)
+  definition tier_discount equals
+    if overage >= tariff.loyalty_threshold then
+      # §5.2 — единая скидка 25% на скидочную часть
+      tariff.loyalty_discount * (money of (discountable_nt * rate_per_nt))
+    else
+      # §5.1 — маржинальная шкала на скидочную часть
+      money of ((tier_discount_nt of discountable_nt, tariff) * rate_per_nt)
+  definition charge_after_tier equals gross_charge - tier_discount
+```
+
+## §5.4–5.5 — Скидка за стаж и реферальная
+
+Скидка за стаж (§5.4): с 13-го непрерывно оплаченного периода дополнительно 5% на
+итог овеража после §5.1–5.3. Реферальная (§5.5): 20% на абонентскую плату. Они
+**не суммируются** — применяется бо́льшая из двух в денежном выражении.
+
+Входы от **рантайма**: `consecutive_paid_periods` — номер текущего периода в
+непрерывной серии оплаченных периодов (серия прерывается приостановкой договора
+более чем на 3 дня, §5.4 — это учёт рантайма); `referral_active` — в этом периоде
+действует реферальная скидка (Владелец пригласил нового Владельца в прошлом
+периоде, §5.5).
+
+```catala
+declaration scope LoyaltyReferralDiscount:
+  context tariff content Tariff
+  input charge_after_tier content money
+  input subscription_fee content money
+  input consecutive_paid_periods content integer
+  input referral_active content boolean
+  output tenure_discount content money
+  output referral_discount content money
+  output combined_discount content money
+
+scope LoyaltyReferralDiscount:
+  definition tariff equals const_tariff
+  definition tenure_discount equals
+    if consecutive_paid_periods >= tariff.tenure_min_periods then
+      tariff.tenure_discount * charge_after_tier
+    else $0.00
+  definition referral_discount equals
+    if referral_active then tariff.referral_discount * subscription_fee
+    else $0.00
+  definition combined_discount equals
+    Money.max of tenure_discount, referral_discount
+```
+
+## §5.6 + §2.3 — Потолок скидок и минимальная сумма
+
+Совокупная скидка по всем основаниям (§5.1–5.5) не может превышать 30% от суммы
+(абонентская плата + овераж) до налогов (§5.6). Итоговая сумма к оплате не может
+быть меньше абонентской платы (§2.3), **кроме** случая расторжения §2.2. Проверку
+минимума делаем на пред-налоговой сумме после скидок; компенсация SLA в этот минимум
+не входит (§7.3) и вычитается позже.
+
+`gross_overage` — сверхлимит по полной ставке до скидок; `tier_discount` — скидка
+§5.1–5.3; `combined_loyalty_referral` — max(§5.4, §5.5).
+
+```catala
+declaration scope DiscountCapAndTotal:
+  context tariff content Tariff
+  input subscription_fee content money
+  input gross_overage content money
+  input tier_discount content money
+  input combined_loyalty_referral content money
+  input is_termination content boolean
+  internal raw_discount content money
+  internal pretax_raw content money
+  output discount_cap content money
+  output total_discount content money
+  output pretax content money
+
+scope DiscountCapAndTotal:
+  definition tariff equals const_tariff
+  definition raw_discount equals tier_discount + combined_loyalty_referral
+  definition discount_cap equals
+    tariff.max_total_discount_ratio * (subscription_fee + gross_overage)
+  definition total_discount equals Money.min of raw_discount, discount_cap
+  definition pretax_raw equals subscription_fee + gross_overage - total_discount
+  definition pretax equals
+    if is_termination then pretax_raw
+    else (if pretax_raw < subscription_fee then subscription_fee else pretax_raw)
+```
+
+## §7 — Компенсация за недоступность (SLA)
+
+Доступность за период (доля минут, в которые сервис отвечал Группе) даёт одну
+строку компенсации (не суммируются, §7.2): <99.5% и ≥98% → 10% платы; <98% и ≥95%
+→ 30%; <95% → 100%. Компенсация — не скидка (§7.3), учитывается отдельной строкой
+после минимума §2.3 и до НДС (§8.1). `availability` — измерение рантайма (доля 0..1).
+
+```catala
+declaration scope SLACompensation:
+  context tariff content Tariff
+  input availability content decimal
+  input subscription_fee content money
+  output compensation content money
+
+scope SLACompensation:
+  definition tariff equals const_tariff
+  definition compensation equals
+    if availability < tariff.sla_full_threshold then subscription_fee
+    else (if availability < tariff.sla_mid_threshold then
+            tariff.sla_mid_ratio * subscription_fee
+    else (if availability < tariff.sla_low_threshold then
+            tariff.sla_low_ratio * subscription_fee
+    else $0.00))
+```
+
+## §8 — НДС и итог к оплате
+
+НДС начисляется последним, на сумму после скидок **и** компенсаций (§8.1), по
+ставке юрисдикции Владельца на последний день периода. `vat_rate` — нормативная
+величина, которую подаёт **рантайм** (§9.2: применяется редакция на соответствующую
+дату, включая ретроактивные изменения — битемпоральное версионирование на стороне
+рантайма). Налогооблагаемая база не уходит в минус (компенсация может превышать
+пред-налоговую сумму).
+
+```catala
+declaration scope FinalBill:
+  input pretax content money
+  input compensation content money
+  input vat_rate content decimal
+  internal taxable content money
+  output vat_amount content money
+  output total_due content money
+
+scope FinalBill:
+  definition taxable equals
+    if pretax - compensation < $0.00 then $0.00 else pretax - compensation
+  definition vat_amount equals vat_rate * taxable
+  definition total_due equals taxable + vat_amount
+```
+
+## §6 — Разнесение начисления по Участникам
+
+Начисление Группы разносится пропорционально доле Участника в нормализованном
+потреблении периода (§6.1), с округлением **вниз** до копейки (§6.2); неразнесённый
+остаток и начисления детских аккаунтов (§6.3) относятся на Владельца.
+
+Фиксация интерпретаций:
+- знаменатель доли — суммарное нормализованное потребление **всех** Участников,
+  включая детские аккаунты (их доля вычисляется, но переносится на Владельца);
+- детский аккаунт (`is_child`, возраст < 18) получает начисление $0.00, его часть
+  поглощает Владелец;
+- Владелец получает `group_charge` минус сумма разнесённого остальным — так он
+  автоматически принимает и остаток округления (§6.2), и доли детей (§6.3);
+- при нулевом суммарном потреблении всё начисление относится на Владельца.
+
+`group_charge` — начисление Группы за период (пред-налоговая сумма после скидок,
+`pretax`). НДС и компенсация SLA — групповые корректирующие строки и здесь не
+разносятся (компенсация по §7.4 может выставляться позже квитанции).
+
+```catala
+declaration scope ParticipantDistribution:
+  input group_charge content money
+  input members content list of Member
+  internal total_normalized content decimal
+  output allocations content list of MemberCharge
+  output owner_charge content money
+
+scope ParticipantDistribution:
+  definition total_normalized equals
+    Decimal.sum of (map each m among members to m.normalized)
+  definition owner_charge equals
+    group_charge
+    - (Money.sum of (map each m among members to
+        (if m.is_owner then $0.00
+         else (if m.is_child then $0.00
+         else (if total_normalized <= 0.0 then $0.00
+         else floor_to_kopeck of
+           ((decimal of group_charge) * (m.normalized / total_normalized)))))))
+  definition allocations equals
+    map each m among members to
+      MemberCharge {
+        -- member_id: m.member_id
+        -- charge:
+          (if m.is_owner then owner_charge
+           else (if m.is_child then $0.00
+           else (if total_normalized <= 0.0 then $0.00
+           else floor_to_kopeck of
+             ((decimal of group_charge) * (m.normalized / total_normalized)))))
+      }
+```
+
+## Композиция: полный расчёт периода по Группе
+
+`GroupPeriodBill` связывает подскоупы в сквозной расчёт периода. Он выводит
+`total_consumption` и `fair_use_excess` из списка Участников (потребление уже
+нормализовано), а остальные величины — состояние и внешние данные — принимает от
+рантайма. Разносится пред-налоговое начисление `pretax` (см. §6).
+
+```catala
+declaration scope GroupPeriodBill:
+  context tariff content Tariff
+  input members content list of Member
+  input carried_balance content decimal
+  input is_termination content boolean
+  input active_days content integer
+  input days_in_month content integer
+  input consecutive_paid_periods content integer
+  input referral_active content boolean
+  input availability content decimal
+  input vat_rate content decimal
+
+  internal total_consumption content decimal
+  internal fair_use_excess content decimal
+
+  allow scope PeriodAllowance
+  over scope OverageComputation
+  charge scope OverageCharge
+  lr scope LoyaltyReferralDiscount
+  cap scope DiscountCapAndTotal
+  sla scope SLACompensation
+  final scope FinalBill
+  dist scope ParticipantDistribution
+
+  output overage content decimal
+  output carryover_to_next content decimal
+  output gross_overage content money
+  output total_discount content money
+  output pretax content money
+  output compensation content money
+  output vat_amount content money
+  output total_due content money
+  output owner_charge content money
+  output allocations content list of MemberCharge
+
+scope GroupPeriodBill:
+  definition tariff equals const_tariff
+  definition total_consumption equals
+    Decimal.sum of (map each m among members to m.normalized)
+  definition fair_use_excess equals
+    Decimal.sum of (map each m among members to
+      (if m.normalized <= tariff.fair_use_cap then 0.0
+       else m.normalized - tariff.fair_use_cap))
+
+  # §2 абонентская плата и включённый объём
+  definition allow.tariff equals tariff
+  definition allow.is_termination equals is_termination
+  definition allow.active_days equals active_days
+  definition allow.days_in_month equals days_in_month
+
+  # §3–4 овераж и перенос остатка
+  definition over.tariff equals tariff
+  definition over.total_consumption equals total_consumption
+  definition over.carried_balance equals carried_balance
+  definition over.included_volume equals allow.included_volume
+  definition over.carryover_allowed equals allow.carryover_allowed
+
+  # §3.1 + §5.1–5.3 тарификация и базовые скидки
+  definition charge.tariff equals tariff
+  definition charge.overage equals over.overage
+  definition charge.fair_use_excess equals fair_use_excess
+
+  # §5.4–5.5 стаж и реферальная
+  definition lr.tariff equals tariff
+  definition lr.charge_after_tier equals charge.charge_after_tier
+  definition lr.subscription_fee equals allow.subscription_fee
+  definition lr.consecutive_paid_periods equals consecutive_paid_periods
+  definition lr.referral_active equals referral_active
+
+  # §5.6 + §2.3 потолок скидок и минимум
+  definition cap.tariff equals tariff
+  definition cap.subscription_fee equals allow.subscription_fee
+  definition cap.gross_overage equals charge.gross_charge
+  definition cap.tier_discount equals charge.tier_discount
+  definition cap.combined_loyalty_referral equals lr.combined_discount
+  definition cap.is_termination equals is_termination
+
+  # §7 компенсация SLA
+  definition sla.tariff equals tariff
+  definition sla.availability equals availability
+  definition sla.subscription_fee equals allow.subscription_fee
+
+  # §8 НДС и итог
+  definition final.pretax equals cap.pretax
+  definition final.compensation equals sla.compensation
+  definition final.vat_rate equals vat_rate
+
+  # §6 разнесение пред-налогового начисления
+  definition dist.group_charge equals cap.pretax
+  definition dist.members equals members
+
+  definition overage equals over.overage
+  definition carryover_to_next equals over.carryover_to_next
+  definition gross_overage equals charge.gross_charge
+  definition total_discount equals cap.total_discount
+  definition pretax equals cap.pretax
+  definition compensation equals sla.compensation
+  definition vat_amount equals final.vat_amount
+  definition total_due equals final.total_due
+  definition owner_charge equals dist.owner_charge
+  definition allocations equals dist.allocations
+```
