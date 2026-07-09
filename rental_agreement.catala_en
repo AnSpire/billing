@@ -1,0 +1,126 @@
+# Sample Rental Agreement (Basic / Beginning) — Catala formalization
+
+> Module Rental_agreement
+
+Source document: `pdf-1050g-sample_rental_agreement_basic_beginning_renting_an_apartment_or_house.pdf`
+(Teacher Resources for Consumer.gov, developed for the FTC by the Center for
+Applied Linguistics).
+
+Provenance: this file formalizes the *computable* money clauses of the agreement
+between **ABC Properties** ("Landlord") and **Silvia Mando** ("Tenant") for the
+dwelling at 9876 Cherry Avenue, Apartment 426. Non-computable clauses (form of
+payment, pets, vehicles, notification duties, etc.) are recorded as prose only
+and are out of scope for the executable model.
+
+The parameters below are the concrete figures written into this particular
+agreement; a different tenancy would instantiate different values.
+
+```catala
+declaration structure AgreementTerms:
+  # §2 RENT
+  data base_rent content money
+  # §5 RENT DUE DATE — late fee schedule
+  data grace_period_days content integer
+  data flat_late_fee content money
+  data daily_late_fee content money
+  # §7 SECURITY DEPOSIT
+  data security_deposit content money
+  # §8 CLEANING FEE
+  data cleaning_fee content money
+```
+
+The terms of the ABC Properties / Silvia Mando agreement:
+
+```catala
+declaration const_terms content AgreementTerms
+  equals AgreementTerms {
+    -- base_rent: $685.00
+    -- grace_period_days: 3
+    -- flat_late_fee: $25.00
+    -- daily_late_fee: $5.00
+    -- security_deposit: $685.00
+    -- cleaning_fee: $200.00
+  }
+```
+
+## §5 — Rent due date and late fee
+
+Quoting the agreement (§5): *"We allow for a 3 day grace period. In the event
+rent is not received prior to the 4th of the month, Tenant agrees to pay a $25
+late fee, plus an additional $5 per day for every day thereafter until late
+payment."*
+
+Interpretation fixed for this model (mirroring the ambiguity-resolution step of
+UC-1/2): rent paid on days 1–3 incurs no fee (grace period). The `$25` flat fee
+first applies when payment is *not* received before the 4th, i.e. on the 4th or
+later. The `$5` per-day surcharge accrues for every day *after* the 4th, so the
+4th itself is the flat fee only.
+
+```catala
+declaration scope LateFeeCalculation:
+  # Terms default to this agreement's figures; a caller may override them to
+  # reuse the same rule for a different tenancy.
+  context terms content AgreementTerms
+  # Day of the month on which rent was actually paid (1 = 1st of the month).
+  input payment_day content integer
+  output late_fee content money
+
+scope LateFeeCalculation:
+  definition terms equals const_terms
+  definition late_fee equals
+    if payment_day <= terms.grace_period_days then
+      $0.00
+    else
+      terms.flat_late_fee
+        + terms.daily_late_fee
+          * (decimal of (payment_day - (terms.grace_period_days + 1)))
+```
+
+## §2 + §5 — Monthly amount due
+
+The total the tenant owes for a month is the base rent plus any late fee.
+
+```catala
+declaration scope MonthlyRentStatement:
+  context terms content AgreementTerms
+  input payment_day content integer
+  fee scope LateFeeCalculation
+  output total_due content money
+
+scope MonthlyRentStatement:
+  definition terms equals const_terms
+  definition fee.terms equals terms
+  definition fee.payment_day equals payment_day
+  definition total_due equals terms.base_rent + fee.late_fee
+```
+
+## §7 + §8 — Security deposit refund
+
+Quoting the agreement (§7): *"Tenants hereby agree to pay a security deposit of
+$685 to be refunded upon vacating... This deposit money minus any necessary
+charges..."* and §8: a *"$200.00 minimum cleaning fee if the Landlord has to
+have the property professionally cleaned."*
+
+The refund is the deposit less documented damages and, when the unit is not
+returned clean, the cleaning fee. It can never be negative (a shortfall is a
+debt the tenant owes, not a negative refund — that separate liability is out of
+scope here).
+
+```catala
+declaration scope SecurityDepositRefund:
+  context terms content AgreementTerms
+  input damages content money
+  input returned_clean content boolean
+  output cleaning_charge content money
+  output refund content money
+
+scope SecurityDepositRefund:
+  definition terms equals const_terms
+  definition cleaning_charge equals
+    if returned_clean then $0.00 else terms.cleaning_fee
+  definition refund equals
+    if terms.security_deposit - damages - cleaning_charge < $0.00 then
+      $0.00
+    else
+      terms.security_deposit - damages - cleaning_charge
+```
