@@ -1,0 +1,145 @@
+# Tests for the rental agreement formalization
+
+These test scopes pin the expected outputs of the model with `assertion`s, so
+`catala interpret` (or `catala test-scope`) fails loudly on any regression.
+
+> Using Rental_agreement
+
+## §5 Late fee — boundary cases
+
+Day 1: inside the 3-day grace period → no fee.
+
+```catala
+#[test]
+declaration scope TestLateFeeDay1:
+  output late_fee content money
+  fee scope Rental_agreement.LateFeeCalculation
+scope TestLateFeeDay1:
+  definition fee.payment_day equals 1
+  definition late_fee equals fee.late_fee
+  assertion late_fee = $0.00
+```
+
+Day 3: last day of the grace period → still no fee.
+
+```catala
+#[test]
+declaration scope TestLateFeeDay3:
+  output late_fee content money
+  fee scope Rental_agreement.LateFeeCalculation
+scope TestLateFeeDay3:
+  definition fee.payment_day equals 3
+  definition late_fee equals fee.late_fee
+  assertion late_fee = $0.00
+```
+
+Day 4: first late day → flat $25, no per-day surcharge yet.
+
+```catala
+#[test]
+declaration scope TestLateFeeDay4:
+  output late_fee content money
+  fee scope Rental_agreement.LateFeeCalculation
+scope TestLateFeeDay4:
+  definition fee.payment_day equals 4
+  definition late_fee equals fee.late_fee
+  assertion late_fee = $25.00
+```
+
+Day 6: $25 flat + 2 days × $5 = $35.
+
+```catala
+#[test]
+declaration scope TestLateFeeDay6:
+  output late_fee content money
+  fee scope Rental_agreement.LateFeeCalculation
+scope TestLateFeeDay6:
+  definition fee.payment_day equals 6
+  definition late_fee equals fee.late_fee
+  assertion late_fee = $35.00
+```
+
+Day 10: $25 flat + 6 days × $5 = $55.
+
+```catala
+#[test]
+declaration scope TestLateFeeDay10:
+  output late_fee content money
+  fee scope Rental_agreement.LateFeeCalculation
+scope TestLateFeeDay10:
+  definition fee.payment_day equals 10
+  definition late_fee equals fee.late_fee
+  assertion late_fee = $55.00
+```
+
+## §2 + §5 Monthly total due
+
+Paid on time (day 2): just the base rent.
+
+```catala
+#[test]
+declaration scope TestTotalOnTime:
+  output total_due content money
+  stmt scope Rental_agreement.MonthlyRentStatement
+scope TestTotalOnTime:
+  definition stmt.payment_day equals 2
+  definition total_due equals stmt.total_due
+  assertion total_due = $685.00
+```
+
+Paid late (day 4): rent $685 + late fee $25 = $710.
+
+```catala
+#[test]
+declaration scope TestTotalLate:
+  output total_due content money
+  stmt scope Rental_agreement.MonthlyRentStatement
+scope TestTotalLate:
+  definition stmt.payment_day equals 4
+  definition total_due equals stmt.total_due
+  assertion total_due = $710.00
+```
+
+## §7 + §8 Security deposit refund
+
+Clean, no damage → full $685 refunded.
+
+```catala
+#[test]
+declaration scope TestRefundClean:
+  output refund content money
+  r scope Rental_agreement.SecurityDepositRefund
+scope TestRefundClean:
+  definition r.damages equals $0.00
+  definition r.returned_clean equals true
+  definition refund equals r.refund
+  assertion refund = $685.00
+```
+
+Not clean, $100 damage → $685 − $200 − $100 = $385.
+
+```catala
+#[test]
+declaration scope TestRefundDirtyWithDamage:
+  output refund content money
+  r scope Rental_agreement.SecurityDepositRefund
+scope TestRefundDirtyWithDamage:
+  definition r.damages equals $100.00
+  definition r.returned_clean equals false
+  definition refund equals r.refund
+  assertion refund = $385.00
+```
+
+Damage exceeds the deposit → refund floored at $0 (never negative).
+
+```catala
+#[test]
+declaration scope TestRefundFloored:
+  output refund content money
+  r scope Rental_agreement.SecurityDepositRefund
+scope TestRefundFloored:
+  definition r.damages equals $1,000.00
+  definition r.returned_clean equals false
+  definition refund equals r.refund
+  assertion refund = $0.00
+```
