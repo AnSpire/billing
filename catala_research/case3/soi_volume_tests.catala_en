@@ -2,16 +2,22 @@
 
 Каждый скоуп-тест фиксирует ожидаемый выход модели через `assertion`, поэтому
 `catala interpret` падает с ненулевым кодом (123) на любой регрессии. Покрыты все
-ветки `if/then/else` модели и зафиксированные интерпретации (пропорция по суткам,
-защита от деления на ноль, клэмп неотрицательности, оба исхода нормативного
-потолка). Значения подобраны так, что все результаты — точные рациональные (Catala
-считает decimal как точную дробь), поэтому равенства строгие.
+ветки `if/then/else` модели, все ветки разбора `PremiseKind` (суммирование по
+реестру) и зафиксированные интерпретации (пропорция по суткам, защита от деления
+на ноль, клэмп неотрицательности, оба исхода нормативного потолка). Значения
+подобраны так, что все результаты — точные рациональные (Catala считает decimal как
+точную дробь), поэтому равенства строгие.
+
+Метерные тесты подают реестр из трёх помещений — по одному каждого типа
+(`Nonresidential`, `ResidentialNoMeter`, `ResidentialMetered`) — так что все ветки
+разбора `kind` в трёх суммах исполняются, а `S_об` считается из их площадей.
 
 > Using Soi_volume
 
 ## Без ОДПУ — базовый расчёт
 
-`N_ои × S_ои = 0.03 × 100 = 3.0`; доля `50/1000 = 0.05`; `V_i = 0.15`.
+`N_ои × S_ои = 0.03 × 100 = 3.0`; `S_об = 600 + 400 = 1000`; доля `50/1000 = 0.05`;
+`V_i = 0.15`. Поле `volume` в реестре без ОДПУ не используется.
 
 ```catala
 #[test]
@@ -19,9 +25,12 @@ declaration scope TestNoMeterBasic:
   output volume_i content decimal
   s scope Soi_volume.NoMeterSOI
 scope TestNoMeterBasic:
+  definition s.n_oi equals 0.03
   definition s.area_i equals 50.0
   definition s.area_common equals 100.0
-  definition s.area_total equals 1000.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 0.0 -- area: 600.0 -- kind: Nonresidential } ;
+      Soi_volume.Premise { -- volume: 0.0 -- area: 400.0 -- kind: ResidentialMetered } ]
   definition s.days_in_period equals 30
   definition s.days_in_month equals 30
   definition volume_i equals s.volume_i
@@ -38,9 +47,11 @@ declaration scope TestNoMeterProration:
   output volume_i content decimal
   s scope Soi_volume.NoMeterSOI
 scope TestNoMeterProration:
+  definition s.n_oi equals 0.03
   definition s.area_i equals 50.0
   definition s.area_common equals 100.0
-  definition s.area_total equals 1000.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 0.0 -- area: 1000.0 -- kind: Nonresidential } ]
   definition s.days_in_period equals 15
   definition s.days_in_month equals 30
   definition volume_i equals s.volume_i
@@ -49,7 +60,7 @@ scope TestNoMeterProration:
 
 ## Без ОДПУ — защита от деления на ноль (S_об = 0)
 
-Нулевая суммарная площадь ⇒ доля 0 ⇒ начисление 0.
+Нулевая суммарная площадь реестра ⇒ доля 0 ⇒ начисление 0.
 
 ```catala
 #[test]
@@ -57,9 +68,11 @@ declaration scope TestNoMeterZeroArea:
   output volume_i content decimal
   s scope Soi_volume.NoMeterSOI
 scope TestNoMeterZeroArea:
+  definition s.n_oi equals 0.03
   definition s.area_i equals 50.0
   definition s.area_common equals 100.0
-  definition s.area_total equals 0.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 0.0 -- area: 0.0 -- kind: Nonresidential } ]
   definition s.days_in_period equals 30
   definition s.days_in_month equals 30
   definition volume_i equals s.volume_i
@@ -77,9 +90,11 @@ declaration scope TestNoMeterZeroDaysInMonth:
   output volume_i content decimal
   s scope Soi_volume.NoMeterSOI
 scope TestNoMeterZeroDaysInMonth:
+  definition s.n_oi equals 0.03
   definition s.area_i equals 50.0
   definition s.area_common equals 100.0
-  definition s.area_total equals 1000.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 0.0 -- area: 1000.0 -- kind: Nonresidential } ]
   definition s.days_in_period equals 10
   definition s.days_in_month equals 0
   definition volume_i equals s.volume_i
@@ -96,6 +111,7 @@ declaration scope TestCapPersonBinds:
   output cap content decimal
   s scope Soi_volume.NormativeCap
 scope TestCapPersonBinds:
+  definition s.subject_norm_per_m2 equals 0.03
   definition s.area_common equals 100.0
   definition s.persons equals 10
   definition s.days_in_period equals 30
@@ -114,6 +130,7 @@ declaration scope TestCapSubjectBinds:
   output cap content decimal
   s scope Soi_volume.NormativeCap
 scope TestCapSubjectBinds:
+  definition s.subject_norm_per_m2 equals 0.03
   definition s.area_common equals 10.0
   definition s.persons equals 1000
   definition s.days_in_period equals 30
@@ -132,6 +149,7 @@ declaration scope TestCapProration:
   output cap content decimal
   s scope Soi_volume.NormativeCap
 scope TestCapProration:
+  definition s.subject_norm_per_m2 equals 0.03
   definition s.area_common equals 100.0
   definition s.persons equals 10
   definition s.days_in_period equals 15
@@ -142,8 +160,10 @@ scope TestCapProration:
 
 ## ОДПУ, холодная вода — базовый расчёт (потолок не связывает)
 
-`raw = 10 − 1 − 1 − 1 − 0.5 − 0.5 = 6.0`; `cap = min(0.03×1000=30, 0.0903×1000=90.3)
-= 30`; `house_soi = 6.0`; доля `0.05`; `V_i = 0.3`.
+Реестр: три помещения по одному каждого типа с `volume = 1` ⇒
+`ΣV_нж + ΣV_жн + ΣV_жп = 3`; `S_об = 500 + 300 + 200 = 1000`.
+`raw = 10 − 3 − 0.5 − 0.5 = 6.0`; `cap = min(0.03×1000=30, 0.0903×1000=90.3) = 30`;
+`house_soi = 6.0`; доля `50/1000 = 0.05`; `V_i = 0.3`.
 
 ```catala
 #[test]
@@ -152,15 +172,16 @@ declaration scope TestColdBasic:
   output volume_i content decimal
   s scope Soi_volume.MeteredColdSOI
 scope TestColdBasic:
+  definition s.subject_norm_per_m2 equals 0.03
   definition s.v_house equals 10.0
-  definition s.sum_nonresidential equals 1.0
-  definition s.sum_residential_no_meter equals 1.0
-  definition s.sum_residential_metered equals 1.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 1.0 -- area: 500.0 -- kind: Nonresidential } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 300.0 -- kind: ResidentialNoMeter } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 200.0 -- kind: ResidentialMetered } ]
   definition s.v_hot_selfproduced equals 0.5
   definition s.v_heating equals 0.5
   definition s.area_i equals 50.0
   definition s.area_common equals 1000.0
-  definition s.area_total equals 1000.0
   definition s.persons equals 1000
   definition s.days_in_period equals 30
   definition s.days_in_month equals 30
@@ -182,15 +203,16 @@ declaration scope TestColdCapBinds:
   output volume_i content decimal
   s scope Soi_volume.MeteredColdSOI
 scope TestColdCapBinds:
+  definition s.subject_norm_per_m2 equals 0.03
   definition s.v_house equals 10.0
-  definition s.sum_nonresidential equals 1.0
-  definition s.sum_residential_no_meter equals 1.0
-  definition s.sum_residential_metered equals 1.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 1.0 -- area: 500.0 -- kind: Nonresidential } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 300.0 -- kind: ResidentialNoMeter } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 200.0 -- kind: ResidentialMetered } ]
   definition s.v_hot_selfproduced equals 0.5
   definition s.v_heating equals 0.5
   definition s.area_i equals 50.0
   definition s.area_common equals 1000.0
-  definition s.area_total equals 1000.0
   definition s.persons equals 10
   definition s.days_in_period equals 30
   definition s.days_in_month equals 30
@@ -202,7 +224,7 @@ scope TestColdCapBinds:
 
 ## ОДПУ, холодная вода — клэмп неотрицательности
 
-Вычитаемое превышает `V_д`: `raw = 1 − 1 − 1 − 1 − 1 − 1 < 0 ⇒ 0`; `house_soi = 0`;
+Вычитаемое превышает `V_д`: `raw = 1 − 3 − 1 − 1 < 0 ⇒ 0`; `house_soi = 0`;
 `V_i = 0`.
 
 ```catala
@@ -212,15 +234,16 @@ declaration scope TestColdNegativeClamp:
   output volume_i content decimal
   s scope Soi_volume.MeteredColdSOI
 scope TestColdNegativeClamp:
+  definition s.subject_norm_per_m2 equals 0.03
   definition s.v_house equals 1.0
-  definition s.sum_nonresidential equals 1.0
-  definition s.sum_residential_no_meter equals 1.0
-  definition s.sum_residential_metered equals 1.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 1.0 -- area: 500.0 -- kind: Nonresidential } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 300.0 -- kind: ResidentialNoMeter } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 200.0 -- kind: ResidentialMetered } ]
   definition s.v_hot_selfproduced equals 1.0
   definition s.v_heating equals 1.0
   definition s.area_i equals 50.0
   definition s.area_common equals 1000.0
-  definition s.area_total equals 1000.0
   definition s.persons equals 1000
   definition s.days_in_period equals 30
   definition s.days_in_month equals 30
@@ -232,8 +255,8 @@ scope TestColdNegativeClamp:
 
 ## ОДПУ, горячая вода — базовый расчёт
 
-`raw = 8 − 1 − 1 − 1 − 1 = 4.0`; `cap = 30` (не связывает); `house_soi = 4.0`;
-доля `0.05`; `V_i = 0.2`.
+`raw = 8 − 3 − 1 = 4.0` (`ΣV = 3`, `V_эг = 1`); `cap = 30` (не связывает);
+`house_soi = 4.0`; доля `0.05`; `V_i = 0.2`.
 
 ```catala
 #[test]
@@ -242,14 +265,15 @@ declaration scope TestHotBasic:
   output volume_i content decimal
   s scope Soi_volume.MeteredHotSOI
 scope TestHotBasic:
+  definition s.subject_norm_per_m2 equals 0.03
   definition s.v_house equals 8.0
-  definition s.sum_nonresidential equals 1.0
-  definition s.sum_residential_no_meter equals 1.0
-  definition s.sum_residential_metered equals 1.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 1.0 -- area: 500.0 -- kind: Nonresidential } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 300.0 -- kind: ResidentialNoMeter } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 200.0 -- kind: ResidentialMetered } ]
   definition s.v_energy equals 1.0
   definition s.area_i equals 50.0
   definition s.area_common equals 1000.0
-  definition s.area_total equals 1000.0
   definition s.persons equals 1000
   definition s.days_in_period equals 30
   definition s.days_in_month equals 30
@@ -261,7 +285,7 @@ scope TestHotBasic:
 
 ## ОДПУ, горячая вода — клэмп неотрицательности
 
-`raw = 1 − 1 − 1 − 1 − 1 < 0 ⇒ 0`; `house_soi = 0`; `V_i = 0`.
+`raw = 1 − 3 − 1 < 0 ⇒ 0`; `house_soi = 0`; `V_i = 0`.
 
 ```catala
 #[test]
@@ -270,14 +294,15 @@ declaration scope TestHotNegativeClamp:
   output volume_i content decimal
   s scope Soi_volume.MeteredHotSOI
 scope TestHotNegativeClamp:
+  definition s.subject_norm_per_m2 equals 0.03
   definition s.v_house equals 1.0
-  definition s.sum_nonresidential equals 1.0
-  definition s.sum_residential_no_meter equals 1.0
-  definition s.sum_residential_metered equals 1.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 1.0 -- area: 500.0 -- kind: Nonresidential } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 300.0 -- kind: ResidentialNoMeter } ;
+      Soi_volume.Premise { -- volume: 1.0 -- area: 200.0 -- kind: ResidentialMetered } ]
   definition s.v_energy equals 1.0
   definition s.area_i equals 50.0
   definition s.area_common equals 1000.0
-  definition s.area_total equals 1000.0
   definition s.persons equals 1000
   definition s.days_in_period equals 30
   definition s.days_in_month equals 30
@@ -285,4 +310,33 @@ scope TestHotNegativeClamp:
   definition volume_i equals s.volume_i
   assertion house_soi = 0.0
   assertion volume_i = 0.0
+```
+
+## Суммирование по типам — вклад даёт только целевой тип
+
+Три помещения разных типов, объёмы `2 / 5 / 8`. Для холодной воды все три суммы
+вычитаются с коэффициентом 1, поэтому `ΣV = 2 + 5 + 8 = 15`; `raw = 100 − 15 = 85`;
+проверяем, что классификация суммирует именно все три категории.
+
+```catala
+#[test]
+declaration scope TestClassificationSums:
+  output house_soi content decimal
+  s scope Soi_volume.MeteredColdSOI
+scope TestClassificationSums:
+  definition s.subject_norm_per_m2 equals 1.0
+  definition s.v_house equals 100.0
+  definition s.premises equals
+    [ Soi_volume.Premise { -- volume: 2.0 -- area: 100.0 -- kind: Nonresidential } ;
+      Soi_volume.Premise { -- volume: 5.0 -- area: 100.0 -- kind: ResidentialNoMeter } ;
+      Soi_volume.Premise { -- volume: 8.0 -- area: 100.0 -- kind: ResidentialMetered } ]
+  definition s.v_hot_selfproduced equals 0.0
+  definition s.v_heating equals 0.0
+  definition s.area_i equals 50.0
+  definition s.area_common equals 1000.0
+  definition s.persons equals 1000000
+  definition s.days_in_period equals 30
+  definition s.days_in_month equals 30
+  definition house_soi equals s.house_soi
+  assertion house_soi = 85.0
 ```

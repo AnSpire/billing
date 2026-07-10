@@ -15,8 +15,10 @@
 
 ## Что в модели и что вне её
 
-Формализуется **вычислимая** часть — сами формулы объёмов, нормативный потолок и
-пропорция по суткам. Вне модели (прозаический контекст, не тащим в скоупы):
+Формализуется **вычислимая** часть — сами формулы объёмов, нормативный потолок,
+пропорция по суткам, а также **суммирование** индивидуально учтённых объёмов и
+суммарной площади помещений по реестру (см. `Premise` ниже). Вне модели
+(прозаический контекст, не тащим в скоупы):
 
 - *«при некачественной/не предоставленной услуге снижение применяется к плате, а
   не к объёму»* — снижение платы считается в денежном контуре рантайма; **объём
@@ -26,36 +28,52 @@
   (`V_д − Σ… `), отдельного правила не требует.
 - определение состава `S_ои` (лестничные площадки, коридоры, холлы и т.п.) —
   дефиниция площади из паспорта дома, не формула; `area_common` приходит готовым.
+- объём **отдельного** помещения (`Premise.volume`) определяется по пунктам 42, 43,
+  59 Правил — это **отдельные нормы вне этой модели**; сюда он приходит уже
+  рассчитанным, модель его только классифицирует и суммирует.
 
-## Провенанс нормативов
+## Провенанс федерального норматива
 
-Все нормативные величины собраны в **одну** структуру `Norms` и **одну** константу
-`const_norms` — точка провенанса. Другой субъект РФ / другой дом = те же поля с
-другими значениями. `per_person_norm` = 0,0903 м³/чел — федеральная фиксированная
-величина (ПП РФ №306). `subject_norm_per_m2` и `n_oi` — региональные нормативы
-потребления в целях содержания общего имущества (устанавливаются субъектом РФ),
-здесь заданы **примерными** значениями и в реальном расчёте приходят из
-регионального акта через `context terms`.
+Федеральная фиксированная величина — потолок 0,0903 м³ на человека (ПП РФ №306) —
+вынесена в структуру `Norms` и константу `const_norms` (точка провенанса), и
+раздаётся скоупам через `context terms` с этим значением по умолчанию. Региональные
+нормативы (`n_oi`, `subject_norm_per_m2`) в константу **не** зашиты — они приходят
+на вход от рантайма (см. ниже), потому что устанавливаются субъектом РФ и подлежат
+битемпоральному версионированию.
 
-Единицы: `per_person_norm` — м³ на человека за месяц; `subject_norm_per_m2` и
-`n_oi` — м³ на 1 м² площади за месяц.
+Единицы: `per_person_norm` — м³ на человека за расчётный месяц.
 
 ```catala
 declaration structure Norms:
   # ПП РФ №306, Прил.1 п.5 — потолок 0,0903 м³ на человека за расчётный месяц
   data per_person_norm content decimal
-  # норматив субъекта РФ на 1 м² площади МОП (для нормативного потолка), м³/м²/мес
-  data subject_norm_per_m2 content decimal
-  # N_ои — норматив потребления на СОИ на 1 м² (формула без ОДПУ), м³/м²/мес
-  data n_oi content decimal
 
 declaration const_norms content Norms
   equals Norms {
     -- per_person_norm: 0.0903
-    -- subject_norm_per_m2: 0.03
-    -- n_oi: 0.03
   }
 ```
+
+## Помещение (реестр дома)
+
+`Premise` — одно жилое/нежилое помещение дома: его объём потребления за период
+(`volume`, м³, уже определён по п.42/43/59 Правил — вне этой модели), площадь
+(`area`, м²) и тип (`kind`). Тип различает три слагаемых формулы с ОДПУ:
+
+```catala
+declaration enumeration PremiseKind:
+  -- Nonresidential      # нежилое помещение — слагаемое V_нж (п.43)
+  -- ResidentialNoMeter  # жилое без ИПУ — слагаемое V_жн
+  -- ResidentialMetered  # жилое с ИПУ — слагаемое V_жп (п.59)
+
+declaration structure Premise:
+  data volume content decimal
+  data area content decimal
+  data kind content PremiseKind
+```
+
+Суммарная площадь всех помещений `S_об` = сумма `area` по реестру. В формуле без
+ОДПУ поле `volume` не используется (показаний нет) — значим только `area`.
 
 ## Вспомогательные функции
 
@@ -95,12 +113,14 @@ declaration prorate content decimal
 человека. Обе величины — месячные нормативы, поэтому пропорционируются по суткам
 на тот же период, что и сравниваемый метерный объём.
 
-Входы `area_common` (S_ои, площадь МОП), `persons` (число жителей), календарь
-периода приходят от **рантайма** (паспорт дома, регистрационный учёт).
+Входы `subject_norm_per_m2` (норматив субъекта РФ на 1 м² МОП, м³/м²/мес),
+`area_common` (S_ои, площадь МОП), `persons` (число жителей) и календарь периода
+приходят от **рантайма** (региональный акт, паспорт дома, регистрационный учёт).
 
 ```catala
 declaration scope NormativeCap:
   context terms content Norms
+  input subject_norm_per_m2 content decimal
   input area_common content decimal
   input persons content integer
   input days_in_period content integer
@@ -112,7 +132,7 @@ declaration scope NormativeCap:
 scope NormativeCap:
   definition terms equals const_norms
   definition subject_limit equals
-    prorate of (terms.subject_norm_per_m2 * area_common),
+    prorate of (subject_norm_per_m2 * area_common),
       days_in_period, days_in_month
   definition person_limit equals
     prorate of (terms.per_person_norm * (decimal of persons)),
@@ -127,26 +147,28 @@ scope NormativeCap:
 Объём по дому `N_ои × S_ои` — нормативная месячная величина, поэтому
 пропорционируется по суткам. Результат уже нормативный по построению, поэтому
 нормативный потолок к нему не применяется (был бы неактивен при `n_oi =
-subject_norm_per_m2`).
+subject_norm_per_m2`). Суммарная площадь `S_об` считается из реестра `premises`.
 
-Входы `area_i` (S_i), `area_common` (S_ои), `area_total` (S_об) и календарь —
-от **рантайма** (паспорт дома, реестр помещений).
+Входы `n_oi` (норматив на СОИ на 1 м², м³/м²/мес — региональный, от рантайма),
+`area_i` (S_i), `area_common` (S_ои), реестр `premises` и календарь — от рантайма.
 
 ```catala
 declaration scope NoMeterSOI:
-  context terms content Norms
+  input n_oi content decimal
   input area_i content decimal
   input area_common content decimal
-  input area_total content decimal
+  input premises content list of Premise
   input days_in_period content integer
   input days_in_month content integer
+  internal area_total content decimal
   internal house_volume content decimal
   output volume_i content decimal
 
 scope NoMeterSOI:
-  definition terms equals const_norms
+  definition area_total equals
+    Decimal.sum of (map each p among premises to p.area)
   definition house_volume equals
-    prorate of (terms.n_oi * area_common), days_in_period, days_in_month
+    prorate of (n_oi * area_common), days_in_period, days_in_month
   definition volume_i equals house_volume * (area_share of area_i, area_total)
 ```
 
@@ -154,9 +176,11 @@ scope NoMeterSOI:
 
 `V_i(СОИ) = ( V_д − Σ V_нж − Σ V_жн − Σ V_жп − V_гв − V_то ) × (S_i / S_об)`.
 
-Объём по дому на СОИ = показание ОДПУ минус потребление, учтённое отдельно
-(нежилые, жилые без ИПУ, жилые с ИПУ, самостоятельно произведённая ГВ, вода на
-отопление). Это и есть «минусовой прибор учёта».
+Объём по дому на СОИ = показание ОДПУ минус потребление, учтённое отдельно.
+Три суммы `Σ V_нж`, `Σ V_жн`, `Σ V_жп` считаются **внутри модели** из реестра
+`premises` разбором по `kind`; так же выводится `S_об`. Самостоятельно
+произведённая ГВ (`V_гв`) и вода на отопление (`V_то`) — общедомовые скалярные
+величины, приходят отдельными входами. Это и есть «минусовой прибор учёта».
 
 Фиксация интерпретаций:
 - если сумма вычитаемого превышает `V_д`, объём СОИ по дому равен **0** (объём не
@@ -167,25 +191,27 @@ scope NoMeterSOI:
 - показания приборов относятся к фактическому периоду и не пропорционируются;
   пропорционируется только потолок (внутри `NormativeCap`).
 
-Все слагаемые `v_*`, суммы `sum_*`, площади и календарь — входы от **рантайма**
-(показания ОДПУ и ИПУ за период, реестр помещений). Единицы — м³.
+Все объёмы — м³, приходят от **рантайма** (показания ОДПУ и ИПУ за период, реестр
+помещений, региональный норматив субъекта для потолка).
 
 ```catala
 declaration scope MeteredColdSOI:
   context terms content Norms
+  input subject_norm_per_m2 content decimal
   input v_house content decimal
-  input sum_nonresidential content decimal
-  input sum_residential_no_meter content decimal
-  input sum_residential_metered content decimal
+  input premises content list of Premise
   input v_hot_selfproduced content decimal
   input v_heating content decimal
   input area_i content decimal
   input area_common content decimal
-  input area_total content decimal
   input persons content integer
   input days_in_period content integer
   input days_in_month content integer
   nc scope NormativeCap
+  internal sum_nonresidential content decimal
+  internal sum_residential_no_meter content decimal
+  internal sum_residential_metered content decimal
+  internal area_total content decimal
   internal house_soi_raw content decimal
   output house_soi content decimal
   output volume_i content decimal
@@ -193,10 +219,31 @@ declaration scope MeteredColdSOI:
 scope MeteredColdSOI:
   definition terms equals const_norms
   definition nc.terms equals terms
+  definition nc.subject_norm_per_m2 equals subject_norm_per_m2
   definition nc.area_common equals area_common
   definition nc.persons equals persons
   definition nc.days_in_period equals days_in_period
   definition nc.days_in_month equals days_in_month
+  definition sum_nonresidential equals
+    Decimal.sum of (map each p among premises to
+      (match p.kind with pattern
+       -- Nonresidential: p.volume
+       -- ResidentialNoMeter: 0.0
+       -- ResidentialMetered: 0.0))
+  definition sum_residential_no_meter equals
+    Decimal.sum of (map each p among premises to
+      (match p.kind with pattern
+       -- Nonresidential: 0.0
+       -- ResidentialNoMeter: p.volume
+       -- ResidentialMetered: 0.0))
+  definition sum_residential_metered equals
+    Decimal.sum of (map each p among premises to
+      (match p.kind with pattern
+       -- Nonresidential: 0.0
+       -- ResidentialNoMeter: 0.0
+       -- ResidentialMetered: p.volume))
+  definition area_total equals
+    Decimal.sum of (map each p among premises to p.area)
   definition house_soi_raw equals
     if (v_house - sum_nonresidential - sum_residential_no_meter
         - sum_residential_metered - v_hot_selfproduced - v_heating) < 0.0
@@ -213,24 +260,26 @@ scope MeteredColdSOI:
 
 Отличается от холодной воды единственным последним слагаемым: вместо `V_гв` и
 `V_то` вычитается `V_эг` — объём ресурса (электроэнергия/газ), использованный при
-производстве отопления и (или) ГВС. Клэмп неотрицательности и нормативный потолок —
-как в холодной воде.
+производстве отопления и (или) ГВС. Три суммы, `S_об`, клэмп неотрицательности и
+нормативный потолок — как в холодной воде.
 
 ```catala
 declaration scope MeteredHotSOI:
   context terms content Norms
+  input subject_norm_per_m2 content decimal
   input v_house content decimal
-  input sum_nonresidential content decimal
-  input sum_residential_no_meter content decimal
-  input sum_residential_metered content decimal
+  input premises content list of Premise
   input v_energy content decimal
   input area_i content decimal
   input area_common content decimal
-  input area_total content decimal
   input persons content integer
   input days_in_period content integer
   input days_in_month content integer
   nc scope NormativeCap
+  internal sum_nonresidential content decimal
+  internal sum_residential_no_meter content decimal
+  internal sum_residential_metered content decimal
+  internal area_total content decimal
   internal house_soi_raw content decimal
   output house_soi content decimal
   output volume_i content decimal
@@ -238,10 +287,31 @@ declaration scope MeteredHotSOI:
 scope MeteredHotSOI:
   definition terms equals const_norms
   definition nc.terms equals terms
+  definition nc.subject_norm_per_m2 equals subject_norm_per_m2
   definition nc.area_common equals area_common
   definition nc.persons equals persons
   definition nc.days_in_period equals days_in_period
   definition nc.days_in_month equals days_in_month
+  definition sum_nonresidential equals
+    Decimal.sum of (map each p among premises to
+      (match p.kind with pattern
+       -- Nonresidential: p.volume
+       -- ResidentialNoMeter: 0.0
+       -- ResidentialMetered: 0.0))
+  definition sum_residential_no_meter equals
+    Decimal.sum of (map each p among premises to
+      (match p.kind with pattern
+       -- Nonresidential: 0.0
+       -- ResidentialNoMeter: p.volume
+       -- ResidentialMetered: 0.0))
+  definition sum_residential_metered equals
+    Decimal.sum of (map each p among premises to
+      (match p.kind with pattern
+       -- Nonresidential: 0.0
+       -- ResidentialNoMeter: 0.0
+       -- ResidentialMetered: p.volume))
+  definition area_total equals
+    Decimal.sum of (map each p among premises to p.area)
   definition house_soi_raw equals
     if (v_house - sum_nonresidential - sum_residential_no_meter
         - sum_residential_metered - v_energy) < 0.0
