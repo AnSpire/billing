@@ -1,0 +1,12 @@
+# Usage:
+#   docker compose up -d          # build (first time / after Dockerfile change) + start
+#   docker compose exec dev bash  # get a shell; source is bind-mounted, edit on host as usual
+#   docker compose exec dev make -C case3 pytest
+#   docker compose exec dev make test-all   # run every case's pytest suite
+#   docker compose down           # stop
+services:
+  dev:
+    build: .
+    volumes:
+      - ./:/workspace
+    working_dir: /workspace
