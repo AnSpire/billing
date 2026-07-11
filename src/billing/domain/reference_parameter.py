@@ -26,6 +26,24 @@ from decimal import Decimal
 from typing import Any
 
 from billing.domain.events import DomainEvent
+from billing.domain.shared import TemporalValidity
+
+__all__ = [
+    "ReferenceParameterError",
+    "MissingProvenanceError",
+    "OverlappingValidTimeError",
+    "InvalidRepealDateError",
+    "ReferenceParameterNotFoundError",
+    "ParameterValue",
+    "TemporalValidity",
+    "Provenance",
+    "ParameterValueVersion",
+    "ReferenceParameterRegistered",
+    "ReferenceParameterCorrected",
+    "ReferenceParameterRepealed",
+    "ReferenceParameter",
+    "ReferenceParameterRepository",
+]
 
 
 class ReferenceParameterError(Exception):
@@ -71,19 +89,6 @@ class ParameterValue:
         if self.kind != "scalar":
             raise TypeError(f"value is not scalar (kind={self.kind!r})")
         return Decimal(self.payload["amount"])
-
-
-@dataclass(frozen=True)
-class TemporalValidity:
-    """valid-time: когда норма действует по закону. ``valid_to=None`` — «до
-    отмены» (общий VO, переиспользуется — billing_aggregates.md, «Общие VO»)."""
-
-    valid_from: datetime
-    valid_to: datetime | None = None
-
-    def __post_init__(self) -> None:
-        if self.valid_to is not None and self.valid_to <= self.valid_from:
-            raise ValueError("valid_to must be strictly after valid_from")
 
 
 @dataclass(frozen=True)
