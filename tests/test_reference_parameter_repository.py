@@ -23,7 +23,7 @@ from billing.domain.reference_parameter import (
     TemporalValidity,
 )
 from billing.infrastructure.db.reference_parameter_repository import (
-    ReferenceParameterRepository,
+    PostgresReferenceParameterRepository,
 )
 
 
@@ -36,7 +36,7 @@ def _provenance(ref: str = "98-FZ vat_rate") -> Provenance:
 
 
 def test_register_value_is_resolvable(db_connection) -> None:
-    repo = ReferenceParameterRepository(db_connection)
+    repo = PostgresReferenceParameterRepository(db_connection)
 
     repo.register_value(
         "vat_rate",
@@ -56,7 +56,7 @@ def test_register_value_is_resolvable(db_connection) -> None:
 def test_no_overlap_among_actual_versions_is_enforced_by_the_database(db_connection) -> None:
     """Регистрируем без предварительного чтения текущего состояния — overlap
     здесь ловит ровно exclusion constraint, а не код приложения."""
-    repo = ReferenceParameterRepository(db_connection)
+    repo = PostgresReferenceParameterRepository(db_connection)
     repo.register_value(
         "vat_rate",
         "RU",
@@ -83,7 +83,7 @@ def test_no_overlap_among_actual_versions_is_enforced_by_the_database(db_connect
 
 
 def test_gaps_between_actual_versions_are_allowed(db_connection) -> None:
-    repo = ReferenceParameterRepository(db_connection)
+    repo = PostgresReferenceParameterRepository(db_connection)
     repo.register_value(
         "vat_rate",
         "RU",
@@ -110,7 +110,7 @@ def test_correct_closes_old_belief_and_as_of_tx_query_returns_history(db_connect
     """Точный сценарий UC-7 из PLAN.md: старая 0.20 valid=[2024-01-01,∞)
     остаётся историческим фактом, новая 0.10 valid=[2026-06-01,∞); то, что
     система считала 5 июля (до коррекции) — 0.20, сегодня — 0.10."""
-    repo = ReferenceParameterRepository(db_connection)
+    repo = PostgresReferenceParameterRepository(db_connection)
     old_version = repo.register_value(
         "vat_rate",
         "RU",
@@ -154,7 +154,7 @@ def test_correct_closes_old_belief_and_as_of_tx_query_returns_history(db_connect
 
 
 def test_repeal_truncates_valid_to_via_repository(db_connection) -> None:
-    repo = ReferenceParameterRepository(db_connection)
+    repo = PostgresReferenceParameterRepository(db_connection)
     repo.register_value(
         "social_norm",
         "RU",
@@ -180,7 +180,7 @@ def test_repeal_truncates_valid_to_via_repository(db_connection) -> None:
 
 
 def test_repeal_without_an_actual_version_raises(db_connection) -> None:
-    repo = ReferenceParameterRepository(db_connection)
+    repo = PostgresReferenceParameterRepository(db_connection)
 
     with pytest.raises(ReferenceParameterNotFoundError):
         repo.repeal(
@@ -191,7 +191,7 @@ def test_repeal_without_an_actual_version_raises(db_connection) -> None:
 def test_missing_provenance_rejects_the_command_before_it_reaches_the_database(
     db_connection,
 ) -> None:
-    repo = ReferenceParameterRepository(db_connection)
+    repo = PostgresReferenceParameterRepository(db_connection)
 
     with pytest.raises(MissingProvenanceError):
         repo.register_value(

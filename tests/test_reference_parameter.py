@@ -22,6 +22,7 @@ from billing.domain.reference_parameter import (
     ReferenceParameterCorrected,
     ReferenceParameterRegistered,
     ReferenceParameterRepealed,
+    ReferenceParameterRepository,
     TemporalValidity,
 )
 
@@ -119,3 +120,10 @@ def test_provenance_requires_non_blank_fields() -> None:
 def test_temporal_validity_rejects_valid_to_before_valid_from() -> None:
     with pytest.raises(ValueError):
         TemporalValidity(valid_from=_dt(2026, 1, 1), valid_to=_dt(2024, 1, 1))
+
+
+def test_repository_port_cannot_be_instantiated_directly() -> None:
+    """Контракт хранилища — абстрактный порт; работать может только адаптер,
+    реализовавший все методы (сейчас — PostgresReferenceParameterRepository)."""
+    with pytest.raises(TypeError):
+        ReferenceParameterRepository()

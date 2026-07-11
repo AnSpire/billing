@@ -1,4 +1,5 @@
-"""Персистентность ReferenceParameter поверх обычного SQL (psycopg3).
+"""Реализация порта ``ReferenceParameterRepository`` (domain) поверх обычного
+SQL (psycopg3) — единственный сейчас адаптер к единственной СУБД проекта.
 
 Никакой ORM (CLAUDE.md §7). Транзакцию открывает и коммитит вызывающий код
 (см. паттерн ``new_connection`` / ``db_connection`` в тестах) — репозиторий
@@ -21,6 +22,7 @@ from billing.domain.reference_parameter import (
     Provenance,
     ReferenceParameter,
     ReferenceParameterNotFoundError,
+    ReferenceParameterRepository,
     TemporalValidity,
 )
 
@@ -30,7 +32,7 @@ _SELECT_COLUMNS = """
 """
 
 
-class ReferenceParameterRepository:
+class PostgresReferenceParameterRepository(ReferenceParameterRepository):
     def __init__(self, conn: Connection) -> None:
         self._conn = conn
 
