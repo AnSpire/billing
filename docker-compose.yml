@@ -1,0 +1,26 @@
+# Postgres для разработки и тестов бекенда (не путать с catala_research/docker-compose.yml —
+# там dev-контейнер для тулчейна Catala).
+#
+# Usage:
+#   docker compose up -d
+#   docker compose down
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: billing
+      POSTGRES_PASSWORD: billing
+      POSTGRES_DB: billing
+    ports:
+      - "5433:5432"
+    volumes:
+      - billing-postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing -d billing"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+volumes:
+  billing-postgres-data:
