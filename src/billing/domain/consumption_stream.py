@@ -18,10 +18,22 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 
 from billing.domain.events import DomainEvent
+from billing.domain.shared import BillingPeriod, Quantity
+
+__all__ = [
+    "ConsumptionStreamError",
+    "MetricMismatchError",
+    "Quantity",
+    "ExternalEventId",
+    "UsageEvent",
+    "UsageRecorded",
+    "RecordUsageResult",
+    "ConsumptionStream",
+    "ConsumptionStreamRepository",
+]
 
 
 class ConsumptionStreamError(Exception):
@@ -30,21 +42,6 @@ class ConsumptionStreamError(Exception):
 
 class MetricMismatchError(ConsumptionStreamError):
     """Quantity.metric не совпадает с metric потока, в который её пишут."""
-
-
-@dataclass(frozen=True)
-class Quantity:
-    """Значение + метрика — общая абстракция над разнородным потреблением
-    (billing_aggregates.md, «Общие VO»). Единственный текущий потребитель —
-    ``ConsumptionStream``; при появлении второго (``BillingAssessment``,
-    фаза 4) стоит вынести в общий модуль домена, не раньше."""
-
-    value: Decimal
-    metric: str
-
-    def __post_init__(self) -> None:
-        if not self.metric:
-            raise ValueError("metric must not be empty")
 
 
 @dataclass(frozen=True)
@@ -146,4 +143,10 @@ class ConsumptionStreamRepository(ABC):
     ) -> RecordUsageResult: ...
 
     @abstractmethod
-    def events_for(self, account_id: str, metric: str) -> list[UsageEvent]: ...
+    def events_for(
+        self, account_id: str, metric: str, *, period: BillingPeriod | None = None
+    ) -> list[UsageEvent]:
+        """Без ``period`` — вся история (как в фазе 2). С ``period`` —
+        свёртка за расчётный период (нужно с фазы 4, ``BillingAssessment``
+        суммирует ``UsageEvent`` за конкретный месяц, не за всё время)."""
+        ...

@@ -22,10 +22,10 @@ from billing.domain.consumption_stream import (
     ConsumptionStream,
     ConsumptionStreamRepository,
     ExternalEventId,
-    Quantity,
     RecordUsageResult,
     UsageEvent,
 )
+from billing.domain.shared import BillingPeriod, Quantity
 
 _SELECT_COLUMNS = """
     event_id, account_id, metric, quantity_value, external_event_id, meta, recorded_at
@@ -85,16 +85,37 @@ class PostgresConsumptionStreamRepository(ConsumptionStreamRepository):
             )
         return RecordUsageResult(event=self._row_to_event(existing), is_duplicate=True)
 
-    def events_for(self, account_id: str, metric: str) -> list[UsageEvent]:
-        rows = self._conn.execute(
-            f"""
-            SELECT {_SELECT_COLUMNS}
-            FROM usage_event
-            WHERE account_id = %s AND metric = %s
-            ORDER BY recorded_at
-            """,
-            (account_id, metric),
-        ).fetchall()
+    def events_for(
+        self, account_id: str, metric: str, *, period: BillingPeriod | None = None
+    ) -> list[UsageEvent]:
+        """Фильтр по периоду — через ``recorded_at`` (когда факт принят
+        системой). Это приближение: "принято в этом периоде" — не то же
+        самое, что "относится к этому периоду" (см. открытый вопрос №3 в
+        use_case.md про формализацию пересмотров UC-8) — но для happy-path
+        свёртки потребления (UC-4/UC-6/UC-7) факты сейчас всегда приходят с
+        ``now``, попадающим в свой же расчётный период, так что этого
+        достаточно на этой фазе."""
+        if period is None:
+            rows = self._conn.execute(
+                f"""
+                SELECT {_SELECT_COLUMNS}
+                FROM usage_event
+                WHERE account_id = %s AND metric = %s
+                ORDER BY recorded_at
+                """,
+                (account_id, metric),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                f"""
+                SELECT {_SELECT_COLUMNS}
+                FROM usage_event
+                WHERE account_id = %s AND metric = %s
+                  AND recorded_at >= %s AND recorded_at < %s
+                ORDER BY recorded_at
+                """,
+                (account_id, metric, period.start, period.end),
+            ).fetchall()
         return [self._row_to_event(row) for row in rows]
 
     @staticmethod
