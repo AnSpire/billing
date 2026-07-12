@@ -78,7 +78,7 @@ def _published_comfort_v1(db_connection) -> TariffVersion:
     tariff_versions.save(draft)
     validated, _ = validate_tariff_version(draft, reference_parameters, now=_dt(2026, 6, 1))
     tariff_versions.save(validated)
-    published, _ = validated.publish(now=_dt(2026, 6, 2))
+    published, _ = validated.publish(approved_by="qa-lead", now=_dt(2026, 6, 2))
     tariff_versions.save(published)
     return published
 

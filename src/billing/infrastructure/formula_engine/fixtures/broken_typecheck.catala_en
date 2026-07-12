@@ -1,0 +1,15 @@
+> Module BrokenTypecheck
+
+Намеренно нетипизируемая формализация — тестовый фикстур для DoD фазы 7:
+«Validate падает на ошибке компиляции как на ошибке формализации (а не на
+Publish)». `amount` объявлен как `money`, но определён через `decimal` без
+конверсии — `catala typecheck` должен упасть с ошибкой несовпадения типов.
+
+```catala
+declaration scope BrokenTypecheck:
+  input consumption content decimal
+  output amount content money
+
+scope BrokenTypecheck:
+  definition amount equals consumption + 1.0
+```

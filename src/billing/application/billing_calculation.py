@@ -41,13 +41,40 @@ from billing.domain.billing_assessment import (
 from billing.domain.consumption_stream import ConsumptionStreamRepository
 from billing.domain.reference_parameter import ReferenceParameterRepository
 from billing.domain.shared import BillingPeriod, Quantity
+from billing.domain.tariff_artifact import TariffArtifactRepository
 from billing.domain.tariff_version import TariffVersion
 
 
-def _artifact_ref_for(tariff: TariffVersion) -> ArtifactRef:
-    """``artifact_hash`` = sha256 заглушки формы (не Catala-исходника — его
-    ещё нет, см. docstring ``ArtifactRef``); ``toolchain_version`` — версия
-    самого́ ``StubFormulaEngine``, а не компилятора Catala."""
+def _artifact_ref_for(
+    tariff: TariffVersion, artifacts: TariffArtifactRepository | None
+) -> ArtifactRef:
+    """Для ``kind == "catala"`` (фаза 7) — пин **реального** артефакта из
+    реестра ``tariff_artifact``: то, что действительно скомпилировано и
+    провалидировано, а не пересчитанный на лету хеш (billing_aggregates.md
+    §3: ``CalcContext`` пиннит версии, а не выводит их заново).
+
+    Для ``kind == "stub"`` (фазы 3–6, без реестра) — прежнее поведение: хеш
+    JSON-заглушки формы, ``toolchain_version`` заглушки-калькулятора. Ничего
+    не меняется для существующих вызовов, не передающих ``artifacts``."""
+    if tariff.formula_form.kind == "catala":
+        if artifacts is None:
+            raise ValueError(
+                "resolving an ArtifactRef for a catala-kind TariffVersion requires "
+                "a TariffArtifactRepository"
+            )
+        artifact = artifacts.get(tariff.tariff_id, tariff.version)
+        if artifact is None:
+            raise ValueError(
+                f"no TariffArtifact for ({tariff.tariff_id!r}, {tariff.version!r}) — "
+                "was Validate ever run for this version?"
+            )
+        return ArtifactRef(
+            tariff_id=tariff.tariff_id,
+            version=tariff.version,
+            artifact_hash=artifact.source_hash,
+            toolchain_version=artifact.compiler_version,
+        )
+
     body_json = json.dumps(
         {"kind": tariff.formula_form.kind, "body": tariff.formula_form.body}, sort_keys=True
     )
@@ -70,6 +97,7 @@ def _build_charge_lines_and_context(
     period: BillingPeriod,
     metric: str,
     now: datetime,
+    artifacts: TariffArtifactRepository | None = None,
 ) -> tuple[tuple[ChargeLine, ...], CalcContext]:
     resolved_refs: list[ResolvedParameterRef] = []
     resolved_values: dict[str, object] = {}
@@ -87,11 +115,16 @@ def _build_charge_lines_and_context(
         )
         resolved_values[key] = resolved.value.as_scalar()
 
+    for scope_input in tariff.scope_manifest.inputs:
+        if scope_input.binding.kind == "coefficient":
+            name = scope_input.binding.payload["name"]
+            resolved_values[name] = Decimal(str(tariff.coefficients.payload[name]))
+
     events = consumption.events_for(account_id, metric, period=period)
     total = sum((event.quantity.value for event in events), start=Decimal(0))
     total_quantity = Quantity(value=total, metric=metric)
 
-    artifact_ref = _artifact_ref_for(tariff)
+    artifact_ref = _artifact_ref_for(tariff, artifacts)
     calc_input = CalcInput(resolved_parameters=resolved_values, total_quantity=total_quantity)
     charge_lines, _steps = formula_engine.execute(artifact_ref, calc_input)
     # steps намеренно отбрасывается здесь — "не материализуется при
@@ -117,6 +150,7 @@ def calculate_assessment(
     *,
     metric: str,
     now: datetime,
+    artifacts: TariffArtifactRepository | None = None,
 ) -> tuple[BillingAssessment, AssessmentCalculated]:
     charge_lines, calc_context = _build_charge_lines_and_context(
         tariff,
@@ -127,6 +161,7 @@ def calculate_assessment(
         period=period,
         metric=metric,
         now=now,
+        artifacts=artifacts,
     )
     return assessments.calculate(account_id, period, charge_lines, calc_context, now=now)
 
@@ -142,6 +177,7 @@ def recalculate_assessment(
     *,
     metric: str,
     now: datetime,
+    artifacts: TariffArtifactRepository | None = None,
 ) -> RecalculateResult:
     charge_lines, calc_context = _build_charge_lines_and_context(
         tariff,
@@ -152,5 +188,6 @@ def recalculate_assessment(
         period=period,
         metric=metric,
         now=now,
+        artifacts=artifacts,
     )
     return assessments.recalculate(account_id, period, charge_lines, calc_context, now=now)

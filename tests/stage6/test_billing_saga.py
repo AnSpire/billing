@@ -96,7 +96,7 @@ def _setup_comfort_tariff(test_database_url: str, *, jurisdiction: str, tariff_i
         tariff_versions.save(draft)
         validated, _ = validate_tariff_version(draft, reference_parameters, now=_dt(2026, 6, 1))
         tariff_versions.save(validated)
-        published, _ = validated.publish(now=_dt(2026, 6, 2))
+        published, _ = validated.publish(approved_by="qa-lead", now=_dt(2026, 6, 2))
         tariff_versions.save(published)
         return published
 

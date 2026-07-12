@@ -60,7 +60,7 @@ def _published_version(repo: PostgresTariffVersionRepository, *, version: int = 
     repo.save(draft)
     validated, _ = draft.validate(unresolved_ref_param_bindings=[], now=_dt(2026, 6, 2))
     repo.save(validated)
-    published, _ = validated.publish(now=_dt(2026, 6, 3))
+    published, _ = validated.publish(approved_by="qa-lead", now=_dt(2026, 6, 3))
     repo.save(published)
     return published
 

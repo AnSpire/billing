@@ -1,0 +1,29 @@
+> Module Comfort
+
+Тариф «Комфорт» (use_case.md, UC-1/2/4): базовая ставка 3,20 ₽/кВт·ч на первые
+300 кВт·ч в месяц, свыше — надбавка 15% на превышение. НДС — отдельная ставка,
+приходит извне (`ReferenceParameter("vat_rate", ...)`), поэтому это вход
+скоупа, а не литерал (billing_aggregates.md §1: коэффициенты — входы скоупа,
+не литералы в теле формулы, кроме тех, что относятся именно к этому тарифу).
+
+```catala
+declaration scope Comfort:
+  input consumption content decimal
+  input base_kwh content decimal
+  input base_rate content money
+  input overage_multiplier content decimal
+  input vat_rate content decimal
+  output base_amount content money
+  output overage_amount content money
+  output vat_amount content money
+
+scope Comfort:
+  definition base_amount equals
+    base_rate * (if consumption <= base_kwh then consumption else base_kwh)
+  definition overage_amount equals
+    base_rate
+    * (if consumption <= base_kwh then 0.0 else consumption - base_kwh)
+    * overage_multiplier
+  definition vat_amount equals
+    (base_amount +$ overage_amount) * vat_rate
+```

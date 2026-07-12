@@ -2,7 +2,12 @@
 name = "billing"
 version = "0.0.1"
 description = "Биллинговый бекенд — доменный монолит (см. PLAN.md, billing_aggregates.md)"
-requires-python = ">=3.12"
+requires-python = ">=3.14"  # фаза 7: catala-сгенерированный stdlib-пакет ловит
+# циклический импорт (Date_en <-> Period_en через List_en/Duration_en/
+# MonthYear_en) под 3.12/3.13 — AttributeError на partially initialized
+# module; на 3.14 резолвится чисто. Воспроизведено и на своём build'е, и на
+# эталонном catala_research/case3 — это свойство генерируемого кода/CPython,
+# не баг конкретной обвязки.
 dependencies = [
     "psycopg[binary]>=3.2",
 ]

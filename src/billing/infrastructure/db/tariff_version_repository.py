@@ -30,7 +30,7 @@ from billing.domain.tariff_version import (
 
 _SELECT_COLUMNS = """
     tariff_id, version, status, source_text, scope_manifest, formula_form,
-    coefficients, valid_from, valid_to, created_at, published_at
+    coefficients, valid_from, valid_to, created_at, published_at, approved_by
 """
 
 
@@ -43,11 +43,12 @@ class PostgresTariffVersionRepository(TariffVersionRepository):
             f"""
             INSERT INTO tariff_version (
                 tariff_id, version, status, source_text, scope_manifest, formula_form,
-                coefficients, valid_from, valid_to, created_at, published_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                coefficients, valid_from, valid_to, created_at, published_at, approved_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (tariff_id, version) DO UPDATE SET
                 status = EXCLUDED.status,
-                published_at = EXCLUDED.published_at
+                published_at = EXCLUDED.published_at,
+                approved_by = EXCLUDED.approved_by
             WHERE tariff_version.status <> 'published'
             RETURNING {_SELECT_COLUMNS}
             """,
@@ -63,6 +64,7 @@ class PostgresTariffVersionRepository(TariffVersionRepository):
                 version.temporal_validity.valid_to,
                 version.created_at,
                 version.published_at,
+                version.approved_by,
             ),
         ).fetchone()
         if row is None:
@@ -92,6 +94,7 @@ class PostgresTariffVersionRepository(TariffVersionRepository):
             valid_to,
             created_at,
             published_at,
+            approved_by,
         ) = row
         return TariffVersion(
             tariff_id=tariff_id,
@@ -104,6 +107,7 @@ class PostgresTariffVersionRepository(TariffVersionRepository):
             temporal_validity=TemporalValidity(valid_from=valid_from, valid_to=valid_to),
             created_at=created_at,
             published_at=published_at,
+            approved_by=approved_by,
         )
 
 

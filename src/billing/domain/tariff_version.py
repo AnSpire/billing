@@ -56,6 +56,12 @@ class TariffVersionImmutableError(TariffVersionError):
     """Опубликованная версия неизменяема — попытка перезаписать её отклонена."""
 
 
+class PublishRequiresApprovalError(TariffVersionError):
+    """CLAUDE.md §4: «перед Publish тарифа — обязательный ручной approve
+    (человек подтверждает AI-формализацию, автопубликация запрещена)».
+    ``Publish`` без непустого ``approved_by`` не проходит."""
+
+
 class TariffVersionStatus(str, Enum):
     DRAFT = "draft"
     VALIDATED = "validated"
@@ -79,10 +85,23 @@ class SourceText:
 
 @dataclass(frozen=True)
 class Binding:
-    """Что читает вход скоупа: ``RefParam(key, jurisdiction) | Metric(name) |
-    AccountState(field)`` (billing_aggregates.md §1, ``ScopeManifest``).
+    """Что читает вход скоупа. billing_aggregates.md §1 перечисляет
+    ``RefParam(key, jurisdiction) | Metric(name) | AccountState(field)``; в
+    фазе 7 к ним добавлен четвёртый вид — ``Coefficient(name)``.
+
+    Это осознанное расширение принятого union'а, а не тихая правка: PLAN.md,
+    «Три ведра чисел» относит `overage_threshold`/`overage_pct`-подобные
+    величины к «коэффициент тарифа — VO внутри TariffVersion», а НЕ к
+    ReferenceParameter — то есть по более позднему решению они физически не
+    там, откуда их мог бы читать ``ref_param``-биндинг. При этом UC-1/2 прямо
+    требует, чтобы такие коэффициенты были **входами скоупа**, а не литералами
+    в теле формулы («тариф выпускается редко... артефакт должен оставаться
+    стабильным при их смене»). Без отдельного вида биндинга эти два решения
+    несовместимы: некуда положить "вход скоупа, читающий именно
+    TariffVersion.coefficients". ``Coefficient`` — недостающее звено.
+
     Тот же приём, что у ``ParameterValue`` в ReferenceParameter: ``kind`` +
-    JSON-``payload`` вместо трёх отдельных классов под один union."""
+    JSON-``payload`` вместо отдельных классов под один union."""
 
     kind: str
     payload: Mapping[str, Any]
@@ -98,6 +117,10 @@ class Binding:
     @staticmethod
     def account_state(field: str) -> Binding:
         return Binding(kind="account_state", payload={"field": field})
+
+    @staticmethod
+    def coefficient(name: str) -> Binding:
+        return Binding(kind="coefficient", payload={"name": name})
 
     @property
     def ref_param_key(self) -> tuple[str, str]:
@@ -135,8 +158,14 @@ class ScopeManifest:
 
 @dataclass(frozen=True)
 class FormulaForm:
-    """Заглушка формы расчёта — см. docstring модуля, пункт 2. ``kind``
-    стабилен в пределах параметра, как и у ``ParameterValue``."""
+    """Форма расчёта. ``kind`` стабилен в пределах параметра, как и у
+    ``ParameterValue``:
+
+    - ``"stub"`` — заглушка фаз 3–6 (JSON-параметры простого калькулятора);
+    - ``"catala"`` — фаза 7, настоящий ``CatalaSource`` (см. docstring модуля,
+      пункт 2 — раньше это имя было зарезервировано, теперь оно используется).
+      ``body["source"]`` — исходный текст ``.catala_en``.
+    """
 
     kind: str
     body: Mapping[str, Any]
@@ -144,6 +173,18 @@ class FormulaForm:
     @staticmethod
     def stub(body: Mapping[str, Any]) -> FormulaForm:
         return FormulaForm(kind="stub", body=dict(body))
+
+    @staticmethod
+    def catala(source: str) -> FormulaForm:
+        if not source:
+            raise ValueError("source must not be empty")
+        return FormulaForm(kind="catala", body={"source": source})
+
+    @property
+    def catala_source(self) -> str:
+        if self.kind != "catala":
+            raise TypeError(f"formula form is not catala (kind={self.kind!r})")
+        return self.body["source"]
 
 
 @dataclass(frozen=True)
@@ -199,6 +240,7 @@ class TariffVersion:
     temporal_validity: TemporalValidity
     created_at: datetime
     published_at: datetime | None = None
+    approved_by: str | None = None
 
     @staticmethod
     def draft_from_text(
@@ -243,12 +285,24 @@ class TariffVersion:
         event = TariffValidated(tariff_id=self.tariff_id, version=self.version)
         return validated, event
 
-    def publish(self, *, now: datetime) -> tuple[TariffVersion, TariffVersionPublished]:
+    def publish(
+        self, *, approved_by: str, now: datetime
+    ) -> tuple[TariffVersion, TariffVersionPublished]:
         if self.status != TariffVersionStatus.VALIDATED:
             raise InvalidTariffVersionTransitionError(
                 f"cannot publish a version in status {self.status}"
             )
-        published = replace(self, status=TariffVersionStatus.PUBLISHED, published_at=now)
+        if not approved_by:
+            raise PublishRequiresApprovalError(
+                "Publish requires a non-empty approved_by — a human must sign off on the "
+                "AI formalization before it goes live (CLAUDE.md §4)"
+            )
+        published = replace(
+            self,
+            status=TariffVersionStatus.PUBLISHED,
+            published_at=now,
+            approved_by=approved_by,
+        )
         event = TariffVersionPublished(tariff_id=self.tariff_id, version=self.version)
         return published, event
 

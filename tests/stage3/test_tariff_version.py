@@ -106,17 +106,18 @@ def test_publish_requires_validated_status() -> None:
     draft, _ = TariffVersion.draft_from_text("comfort", 1, _formalization(), now=_dt(2026, 6, 1))
 
     with pytest.raises(InvalidTariffVersionTransitionError):
-        draft.publish(now=_dt(2026, 6, 2))
+        draft.publish(approved_by="qa-lead", now=_dt(2026, 6, 2))
 
 
 def test_publish_transitions_validated_to_published() -> None:
     draft, _ = TariffVersion.draft_from_text("comfort", 1, _formalization(), now=_dt(2026, 6, 1))
     validated, _ = draft.validate(unresolved_ref_param_bindings=[], now=_dt(2026, 6, 2))
 
-    published, event = validated.publish(now=_dt(2026, 6, 3))
+    published, event = validated.publish(approved_by="qa-lead", now=_dt(2026, 6, 3))
 
     assert published.status is TariffVersionStatus.PUBLISHED
     assert published.published_at == _dt(2026, 6, 3)
+    assert published.approved_by == "qa-lead"
     assert isinstance(event, TariffVersionPublished)
 
 

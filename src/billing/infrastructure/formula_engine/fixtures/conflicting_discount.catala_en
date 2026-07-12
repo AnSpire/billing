@@ -1,0 +1,17 @@
+> Module ConflictingDiscount
+
+Намеренно сломанная формализация — тестовый фикстур для DoD фазы 7:
+«перекрывающиеся applies_when дают ошибку конфликта дефолтов (не молчаливый
+приоритет)». Два правила скидки перекрываются на потреблении >= 10 (оба
+условия истинны одновременно), и ни одно не помечено как `exception` другого
+— по правилам Catala это конфликт, а не «побеждает первое/второе».
+
+```catala
+declaration scope ConflictingDiscount:
+  input consumption content decimal
+  output discount content money
+
+scope ConflictingDiscount:
+  definition discount under condition consumption >= 10.0 consequence equals $100
+  definition discount under condition consumption >= 5.0 consequence equals $50
+```

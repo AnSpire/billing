@@ -96,7 +96,7 @@ def _setup_and_calculate(test_database_url: str, *, dispatcher: EventDispatcher)
         tariff_versions.save(draft)
         validated, _ = validate_tariff_version(draft, reference_parameters, now=_dt(2026, 6, 1))
         tariff_versions.save(validated)
-        published, _ = validated.publish(now=_dt(2026, 6, 2))
+        published, _ = validated.publish(approved_by="qa-lead", now=_dt(2026, 6, 2))
         tariff_versions.save(published)
 
     with new_connection(test_database_url) as conn:
