@@ -21,6 +21,7 @@ from typing import Any
 import psycopg.errors
 from psycopg import Connection
 from psycopg.types.json import Jsonb
+from psycopg.types.range import Range
 
 from billing.domain.billing_assessment import (
     ArtifactRef,
@@ -102,6 +103,36 @@ class PostgresBillingAssessmentRepository(BillingAssessmentRepository):
             (account_id, period.year, period.month, version),
         ).fetchone()
         return self._row_to_assessment(row) if row else None
+
+    def find_active_by_ref_param_and_period_range(
+        self, key: str, jurisdiction: str, valid_from: datetime, valid_to: datetime | None
+    ) -> Sequence[BillingAssessment]:
+        """Период хранится как ``(period_year, period_month)`` (не range-типом,
+        см. миграцию ``0005_billing_assessment.sql``) — конвертируем его в
+        ``tstzrange`` на лету через ``make_timestamptz``, чтобы сравнить с
+        valid-time коррекции оператором ``&&``. Второе условие —
+        ``EXISTS``-проверка по JSONB-массиву ``resolved_parameters`` внутри
+        ``calc_context``: пересечение периода само по себе не означает, что
+        именно ЭТОТ тариф читает именно ЭТОТ параметр (UC-7: «... по всем
+        аккаунтам, тарифы которых читают vat_rate/RU», не «по всем
+        аккаунтам с периодом в июне»)."""
+        rows = self._conn.execute(
+            f"""
+            SELECT {_SELECT_COLUMNS} FROM billing_assessment
+            WHERE status = 'active'
+              AND tstzrange(
+                    make_timestamptz(period_year, period_month, 1, 0, 0, 0, 'UTC'),
+                    make_timestamptz(period_year, period_month, 1, 0, 0, 0, 'UTC') + interval '1 month',
+                    '[)'
+                  ) && %s
+              AND EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(calc_context -> 'resolved_parameters') AS rp
+                    WHERE rp ->> 'key' = %s AND rp ->> 'jurisdiction' = %s
+                  )
+            """,
+            (Range(valid_from, valid_to, bounds="[)"), key, jurisdiction),
+        ).fetchall()
+        return [self._row_to_assessment(row) for row in rows]
 
     def _insert(self, assessment: BillingAssessment) -> None:
         try:

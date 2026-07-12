@@ -1,0 +1,23 @@
+> Module MixedConflict
+
+Фикстура для DoD фазы 8 (use_case.md UC-7, «Обработка ошибок веера»): нужен
+тариф, читающий И потребление, И `ReferenceParameter`, у которого конфликт
+дефолтов возникает не при первом расчёте, а именно ПОСЛЕ коррекции
+референсного параметра — чтобы проверить, что веерный пересчёт падает по
+конфликту на одном аккаунте, но не останавливается для остальных.
+
+При `consumption = 12` первое правило истинно всегда; при `vat_rate = 0.05`
+второе правило ложно — конфликта нет, `amount = $100`. После коррекции
+`vat_rate` на `0.20` второе правило становится истинным ОДНОВРЕМЕННО с
+первым — вот тут и наступает конфликт дефолтов (см. `tests/stage8/`).
+
+```catala
+declaration scope MixedConflict:
+  input consumption content decimal
+  input vat_rate content decimal
+  output amount content money
+
+scope MixedConflict:
+  definition amount under condition consumption >= 10.0 consequence equals $100
+  definition amount under condition vat_rate >= 0.15 consequence equals $50
+```

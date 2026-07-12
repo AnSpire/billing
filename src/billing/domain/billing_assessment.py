@@ -355,3 +355,14 @@ class BillingAssessmentRepository(ABC):
     def get_version(
         self, account_id: str, period: BillingPeriod, version: int
     ) -> BillingAssessment | None: ...
+
+    @abstractmethod
+    def find_active_by_ref_param_and_period_range(
+        self, key: str, jurisdiction: str, valid_from: datetime, valid_to: datetime | None
+    ) -> Sequence[BillingAssessment]:
+        """Фаза 8 (веерный пересчёт, UC-7): все активные версии, чей период
+        пересекается с ``[valid_from, valid_to)`` **и** чей
+        ``CalcContext.resolved_parameters`` ссылается именно на
+        ``(key, jurisdiction)`` — не "все периоды с июня", а "периоды с июня
+        у тех, чьи тарифы читают именно этот параметр" (use_case.md UC-7)."""
+        ...

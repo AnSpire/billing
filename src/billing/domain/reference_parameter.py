@@ -135,10 +135,19 @@ class ReferenceParameterRegistered(DomainEvent):
 
 @dataclass(frozen=True, kw_only=True)
 class ReferenceParameterCorrected(DomainEvent):
+    """``valid_from``/``valid_to`` — valid-time новой версии (PLAN.md, фаза 8:
+    веерный пересчёт находит затронутые ``BillingAssessment`` по пересечению
+    периода с ЭТИМ диапазоном). Несём его в самом событии, а не заставляем
+    обработчика саги отдельно перечитывать версию по ``version_id`` —
+    события уже сейчас несут всё, что нужно для следующего шага (см.
+    ``AssessmentRecalculated.diff`` — тот же приём)."""
+
     key: str
     jurisdiction: str
     version_id: uuid.UUID
     superseded_version_ids: tuple[uuid.UUID, ...]
+    valid_from: datetime
+    valid_to: datetime | None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -213,6 +222,8 @@ class ReferenceParameter:
             jurisdiction=self.jurisdiction,
             version_id=version.version_id,
             superseded_version_ids=tuple(v.version_id for v in superseded),
+            valid_from=validity.valid_from,
+            valid_to=validity.valid_to,
         )
         return version, event
 
@@ -297,7 +308,14 @@ class ReferenceParameterRepository(ABC):
         provenance: Provenance,
         *,
         now: datetime,
-    ) -> ParameterValueVersion: ...
+    ) -> tuple[ParameterValueVersion, ReferenceParameterCorrected]:
+        """Возвращает и версию, и событие — в отличие от ``register_value``/
+        ``repeal`` ниже (PLAN.md, фаза 8): ``ReferenceParameterCorrected``
+        нужен вызывающему коду, чтобы продиспетчить веерный пересчёт
+        (``application/mass_recalculation.py``). ``register_value``/``repeal``
+        своего потребителя события пока не завели — не расширяем их сигнатуру
+        молча "на будущее" (CLAUDE.md §8, п.1)."""
+        ...
 
     @abstractmethod
     def repeal(

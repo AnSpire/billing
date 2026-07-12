@@ -21,6 +21,7 @@ from billing.domain.reference_parameter import (
     ParameterValueVersion,
     Provenance,
     ReferenceParameter,
+    ReferenceParameterCorrected,
     ReferenceParameterNotFoundError,
     ReferenceParameterRepository,
     TemporalValidity,
@@ -60,15 +61,15 @@ class PostgresReferenceParameterRepository(ReferenceParameterRepository):
         provenance: Provenance,
         *,
         now: datetime,
-    ) -> ParameterValueVersion:
+    ) -> tuple[ParameterValueVersion, ReferenceParameterCorrected]:
         aggregate = ReferenceParameter(key=key, jurisdiction=jurisdiction)
         superseded = self._find_actual_overlapping(key, jurisdiction, validity)
-        version, _event = aggregate.correct(
+        version, event = aggregate.correct(
             value, validity, provenance, now=now, superseded=superseded
         )
         self._close(superseded, tx_to=now)
         self._insert(version)
-        return version
+        return version, event
 
     def repeal(
         self,

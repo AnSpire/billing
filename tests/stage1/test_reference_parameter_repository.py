@@ -121,7 +121,7 @@ def test_correct_closes_old_belief_and_as_of_tx_query_returns_history(db_connect
     )
 
     correction_moment = _dt(2026, 7, 10)
-    new_version = repo.correct(
+    new_version, _event = repo.correct(
         "vat_rate",
         "RU",
         ParameterValue.scalar(Decimal("0.10")),
