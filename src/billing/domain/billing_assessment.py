@@ -30,7 +30,7 @@ from decimal import Decimal
 from enum import Enum
 
 from billing.domain.events import DomainEvent
-from billing.domain.shared import BillingPeriod, Quantity
+from billing.domain.shared import BillingPeriod, Money, Quantity
 
 
 class BillingAssessmentError(Exception):
@@ -65,25 +65,6 @@ class ArtifactNotFoundError(BillingAssessmentError):
 class AssessmentStatus(str, Enum):
     ACTIVE = "active"
     SUPERSEDED = "superseded"
-
-
-@dataclass(frozen=True)
-class Money:
-    """Сумма + валюта (billing_aggregates.md, «Общие VO»). Правило округления
-    сейчас не отдельное поле VO, а фиксированная политика калькулятора
-    (ROUND_HALF_UP до копеек, см. infrastructure/formula_engine) — в DoD
-    фазы 4 не встретилось сценария с разными правилами округления для разных
-    Money, вводить настраиваемое поле было бы преждевременно."""
-
-    amount: Decimal
-    currency: str = "RUB"
-
-    def __add__(self, other: Money) -> Money:
-        if self.currency != other.currency:
-            raise ValueError(
-                f"cannot add Money in different currencies: {self.currency!r} vs {other.currency!r}"
-            )
-        return Money(self.amount + other.amount, self.currency)
 
 
 @dataclass(frozen=True)
