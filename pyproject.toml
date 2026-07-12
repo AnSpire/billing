@@ -10,15 +10,19 @@ requires-python = ">=3.14"  # фаза 7: catala-сгенерированный 
 # не баг конкретной обвязки.
 dependencies = [
     "psycopg[binary]>=3.2",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "httpx>=0.27",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [build-system]
 requires = ["hatchling"]
