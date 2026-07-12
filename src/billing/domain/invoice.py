@@ -33,6 +33,13 @@ class InvalidCorrectionError(InvoiceError):
     period), что и исходная — иначе CorrectionLink врёт о том, что корректирует."""
 
 
+class DuplicateInvoiceError(InvoiceError):
+    """Квитанция для этой версии assessment уже выставлена — гонка двух
+    конкурентных доставок одного события (см. UNIQUE в
+    ``0006_invoice.sql``); обычно означает, что вызывающий код должен был
+    сначала проверить ``find_by_assessment_version`` (идемпотентность)."""
+
+
 @dataclass(frozen=True)
 class InvoiceLine:
     """Замороженная КОПИЯ ChargeLine, не ссылка (billing_aggregates.md §4) —
@@ -153,3 +160,14 @@ class InvoiceRepository(ABC):
 
     @abstractmethod
     def get(self, invoice_id: uuid.UUID) -> Invoice | None: ...
+
+    @abstractmethod
+    def find_by_assessment_version(
+        self, account_id: str, period: BillingPeriod, version: int
+    ) -> Invoice | None:
+        """Нужен с фазы 6 для идемпотентности саги: обработчик
+        ``AssessmentCalculated``/``AssessmentRecalculated`` проверяет ЭТИМ
+        запросом, не выставлена ли квитанция для данной версии assessment
+        уже (при повторной доставке события) — вместо того чтобы полагаться
+        на память процесса."""
+        ...

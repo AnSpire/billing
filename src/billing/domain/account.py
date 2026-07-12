@@ -273,6 +273,15 @@ class AccountRepository(ABC):
     def entries_for(self, account_id: str) -> list[LedgerEntry]: ...
 
     @abstractmethod
+    def find_by_invoice(self, invoice_id: uuid.UUID) -> LedgerEntry | None:
+        """Нужен с фазы 6: обработчик ``InvoiceIssued``/
+        ``CorrectingInvoiceIssued`` проверяет этим запросом, не проведён ли
+        уже платёж/корректировка по этому ``invoice_id`` — идемпотентность
+        повторной доставки, тем же приёмом, что
+        ``InvoiceRepository.find_by_assessment_version``."""
+        ...
+
+    @abstractmethod
     def balance(self, account_id: str) -> Money: ...
 
     @abstractmethod

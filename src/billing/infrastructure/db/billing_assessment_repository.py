@@ -79,7 +79,7 @@ class PostgresBillingAssessmentRepository(BillingAssessmentRepository):
         superseded, new_version, event = previous.recalculate(charge_lines, calc_context, now=now)
         self._mark_superseded(superseded)
         self._insert(new_version)
-        return RecalculateResult(superseded=superseded, new_version=new_version, diff=event.diff)
+        return RecalculateResult(superseded=superseded, new_version=new_version, event=event)
 
     def get_active(self, account_id: str, period: BillingPeriod) -> BillingAssessment | None:
         row = self._conn.execute(

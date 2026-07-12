@@ -93,6 +93,12 @@ class PostgresAccountRepository(AccountRepository):
         ).fetchall()
         return [self._row_to_entry(row) for row in rows]
 
+    def find_by_invoice(self, invoice_id: uuid.UUID) -> LedgerEntry | None:
+        row = self._conn.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM ledger_entry WHERE invoice_id = %s", (invoice_id,)
+        ).fetchone()
+        return self._row_to_entry(row) if row else None
+
     def balance(self, account_id: str) -> Money:
         return Account.balance(self.entries_for(account_id))
 

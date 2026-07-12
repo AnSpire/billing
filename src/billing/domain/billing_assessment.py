@@ -310,7 +310,11 @@ class FormulaEngine(ABC):
 class RecalculateResult:
     superseded: BillingAssessment
     new_version: BillingAssessment
-    diff: AssessmentDiff
+    event: AssessmentRecalculated
+
+    @property
+    def diff(self) -> AssessmentDiff:
+        return self.event.diff
 
 
 class BillingAssessmentRepository(ABC):

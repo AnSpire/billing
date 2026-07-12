@@ -13,12 +13,14 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+import psycopg.errors
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
 from billing.domain.billing_assessment import BillingAssessment
 from billing.domain.invoice import (
     CorrectingInvoiceIssued,
+    DuplicateInvoiceError,
     InvalidCorrectionError,
     Invoice,
     InvoiceIssued,
@@ -66,26 +68,45 @@ class PostgresInvoiceRepository(InvoiceRepository):
         ).fetchone()
         return self._row_to_invoice(row) if row else None
 
-    def _insert(self, invoice: Invoice) -> None:
-        self._conn.execute(
-            """
-            INSERT INTO invoice (
-                invoice_id, account_id, period_year, period_month, assessment_version,
-                lines, total, correction_of_invoice_id, issued_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    def find_by_assessment_version(
+        self, account_id: str, period: BillingPeriod, version: int
+    ) -> Invoice | None:
+        row = self._conn.execute(
+            f"""
+            SELECT {_SELECT_COLUMNS} FROM invoice
+            WHERE account_id = %s AND period_year = %s AND period_month = %s
+              AND assessment_version = %s
             """,
-            (
-                invoice.invoice_id,
-                invoice.account_id,
-                invoice.period.year,
-                invoice.period.month,
-                invoice.assessment_version,
-                Jsonb([_line_to_json(line) for line in invoice.lines]),
-                Jsonb(_money_to_json(invoice.total)),
-                invoice.correction_link.original_invoice_id if invoice.correction_link else None,
-                invoice.issued_at,
-            ),
-        )
+            (account_id, period.year, period.month, version),
+        ).fetchone()
+        return self._row_to_invoice(row) if row else None
+
+    def _insert(self, invoice: Invoice) -> None:
+        try:
+            self._conn.execute(
+                """
+                INSERT INTO invoice (
+                    invoice_id, account_id, period_year, period_month, assessment_version,
+                    lines, total, correction_of_invoice_id, issued_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    invoice.invoice_id,
+                    invoice.account_id,
+                    invoice.period.year,
+                    invoice.period.month,
+                    invoice.assessment_version,
+                    Jsonb([_line_to_json(line) for line in invoice.lines]),
+                    Jsonb(_money_to_json(invoice.total)),
+                    invoice.correction_link.original_invoice_id if invoice.correction_link else None,
+                    invoice.issued_at,
+                ),
+            )
+        except psycopg.errors.UniqueViolation as exc:
+            raise DuplicateInvoiceError(
+                f"an invoice for ({invoice.account_id!r}, {invoice.period}, "
+                f"assessment_version={invoice.assessment_version}) already exists"
+            ) from exc
 
     @staticmethod
     def _row_to_invoice(row: tuple) -> Invoice:

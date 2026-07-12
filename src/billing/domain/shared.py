@@ -86,6 +86,15 @@ class BillingPeriod:
     def __str__(self) -> str:
         return f"{self.year:04d}-{self.month:02d}"
 
+    @staticmethod
+    def parse(value: str) -> BillingPeriod:
+        """Обратная операция к ``__str__`` — нужна с фазы 6: доменные события
+        (``AssessmentCalculated`` и т.п.) несут период строкой, обработчик
+        саги восстанавливает из неё ``BillingPeriod`` для последующих
+        запросов к репозиториям."""
+        year_str, month_str = value.split("-", 1)
+        return BillingPeriod(year=int(year_str), month=int(month_str))
+
 
 @dataclass(frozen=True)
 class Money:
