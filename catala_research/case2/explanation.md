@@ -136,3 +136,16 @@ Python** напрямую, мокая входы рантайма (`carried_bala
 расторжения) конкретными значениями под граничные случаи, включая сценарии, которых
 нет в Catala-контуре (`test_e2e_carried_balance_mocked_state`,
 `test_final_retroactive_vat_change`, `test_tariff_override_reuses_scope`).
+
+
+
+- TokenNormalization — сырые токены → НТ по коэффициентам §1.2;
+- PeriodAllowance — абонплата и включённый объём, пропорция при расторжении;
+- OverageComputation — списание «перенос → включённый → овераж», перенос ≤20%;
+- OverageCharge — тарификация овеража + скидки §5.1–5.3 (шкала vs лояльность, вычет fair-use);
+- LoyaltyReferralDiscount — стаж vs реферальная, max;
+- DiscountCapAndTotal — потолок 30% + минимум §2.3;
+- SLACompensation — компенсация по доступности;
+- FinalBill — НДС и итог;
+- ParticipantDistribution — разнос по долям, round-down, остаток+дети Владельцу;
+- GroupPeriodBill — композитный скоуп, связывающий всё.
