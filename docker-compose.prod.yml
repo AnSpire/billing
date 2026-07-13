@@ -1,0 +1,50 @@
+# Деплой на сервер: API + Postgres.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Отличия от docker-compose.yml (тот — только dev-база для локальных тестов):
+# здесь есть сам сервис, порт БД наружу не публикуется, пароль берётся из
+# окружения, uvicorn без --reload.
+#
+# ⚠️ Аутентификации в API нет — не выставляй порт 8000 в интернет без
+# reverse-proxy с авторизацией перед ним.
+#
+# Имя проекта задано явно: без него compose берёт его из имени каталога, и
+# prod-конфиг делит контейнеры/том с dev'ным docker-compose.yml — то есть
+# `up` по этому файлу ПЕРЕСОЗДАЁТ dev-базу поверх той же папки данных.
+name: billing-prod
+
+services:
+  api:
+    build: .
+    environment:
+      BILLING_DATABASE_URL: postgresql://billing:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/billing
+      # Нужен только для `run --rm api pytest` — conftest.py гоняет миграции и
+      # тесты на ОТДЕЛЬНОЙ базе billing_test (её создаёт initdb-скрипт ниже),
+      # чтобы прогон не топтал боевые данные.
+      BILLING_TEST_DATABASE_URL: postgresql://billing:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/billing_test
+    ports:
+      - "127.0.0.1:8000:8000"   # только loopback; наружу — через nginx/traefik
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: billing
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: billing
+    volumes:
+      - billing-postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U billing -d billing"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  billing-postgres-data:

@@ -1,0 +1,9 @@
+.git
+.venv
+_build
+_targets
+.pytest_cache
+**/__pycache__
+catala_research
+*.md
+!README.md
