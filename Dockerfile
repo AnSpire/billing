@@ -1,43 +1,20 @@
-# Образ API. Несёт внутри тулчейн Catala — не опционально: компиляция тарифа
-# происходит в рантайме, на шаге Validate (application/tariff_validation.py),
-# а CatalaFormulaEngine при промахе дискового кэша пересобирает артефакт из
-# catala_source, лежащего в БД. Без компилятора сервис поднимется, но любой
-# POST /tariffs/.../validate упадёт.
+# Образ API. Тулчейн Catala приезжает из базового образа (Dockerfile.toolchain)
+# — он не опционален: компиляция тарифа происходит в рантайме, на шаге Validate
+# (application/tariff_validation.py), а CatalaFormulaEngine при промахе дискового
+# кэша пересобирает артефакт из catala_source, лежащего в БД. Без компилятора
+# сервис поднимется, но любой POST /tariffs/.../validate упадёт.
 #
-# Питон — строго 3.14 (см. requires-python в pyproject.toml): на 3.12/3.13
-# сгенерированный Catala stdlib ловит циклический импорт.
+# Базовый образ собирается отдельно и редко (~40 минут, только при смене версии
+# Catala):
 #
-# Тулчейн ставится тем же рецептом, что в catala_research/Dockerfile —
-# switch обязан называться "catala": infrastructure/formula_engine/
-# catala_toolchain.py:_opam_prefix() зовёт `opam var --switch=catala prefix`,
-# то есть в рантайме нужен сам opam, а не только бинарь catala в PATH.
-FROM python:3.14-slim
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    OPAMROOT=/opt/opam \
-    OPAMYES=1 \
-    PYTHONUNBUFFERED=1
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        opam \
-        m4 \
-        pkg-config \
-        libgmp-dev \
-        build-essential \
-        ninja-build \
-        ca-certificates \
-        git \
-        curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# --disable-sandboxing: bwrap-песочница opam не работает во вложенных
-# user namespaces контейнера; сборка и так изолирована самим контейнером.
-RUN opam init --bare --disable-sandboxing -a \
-    && opam switch create catala 4.14.2 \
-    && opam install -y --switch=catala catala.1.2.1 \
-    && opam clean --switch=catala -a -c -s -r
-
-ENV PATH="/opt/opam/catala/bin:${PATH}"
+#   make toolchain-image
+#
+# Его нет в реестре, он живёт локально в демоне — поэтому на новой машине (и под
+# другим демоном: rootless vs sudo) сначала `make toolchain-image`, потом уже
+# `docker compose -f docker-compose.prod.yml up -d --build`. Если базового образа
+# нет, сборка упадёт сразу с "pull access denied" — это ожидаемо, а не поломка.
+ARG TOOLCHAIN_IMAGE=billing-catala-toolchain:1.2.1
+FROM ${TOOLCHAIN_IMAGE}
 
 WORKDIR /app
 

@@ -1,0 +1,51 @@
+# Базовый образ: Python + тулчейн Catala. Собирается ОТДЕЛЬНО от приложения и
+# живёт долго — пересобирать его надо только при смене версии Catala/OCaml или
+# самой базы:
+#
+#   make toolchain-image
+#
+# Зачем отдельный образ: opam switch + сборка catala.1.2.1 из исходников — это
+# ~40 минут. Пока эти слои лежали в основном Dockerfile, их сносило любое
+# событие, инвалидирующее кэш сборки (чистый сервер, docker system prune -a,
+# перезалив тега python:3.14-slim апстримом, сборка под другим демоном —
+# rootless vs sudo). Вынесенные в базовый образ, они переживают всё это: базовый
+# образ хранится как обычный образ, а не как кэш сборки.
+#
+# Питон — строго 3.14 (см. requires-python в pyproject.toml): на 3.12/3.13
+# сгенерированный Catala stdlib ловит циклический импорт.
+#
+# База запинена по digest, а не по плавающему тегу: иначе перезалив
+# python:3.14-slim апстримом инвалидирует apt+opam ниже и возвращает те самые
+# 40 минут без единой правки с нашей стороны. Обновляется осознанно:
+#   docker manifest inspect python:3.14-slim | head
+FROM python:3.14-slim@sha256:072ffcb57bab690052d9b695592d811a42b849e8ef254ced334a28f283d5f76a
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    OPAMROOT=/opt/opam \
+    OPAMYES=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        opam \
+        m4 \
+        pkg-config \
+        libgmp-dev \
+        build-essential \
+        ninja-build \
+        ca-certificates \
+        git \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# --disable-sandboxing: bwrap-песочница opam не работает во вложенных
+# user namespaces контейнера; сборка и так изолирована самим контейнером.
+#
+# switch обязан называться "catala": infrastructure/formula_engine/
+# catala_toolchain.py:_opam_prefix() зовёт `opam var --switch=catala prefix`,
+# то есть в рантайме нужен сам opam, а не только бинарь catala в PATH.
+RUN opam init --bare --disable-sandboxing -a \
+    && opam switch create catala 4.14.2 \
+    && opam install -y --switch=catala catala.1.2.1 \
+    && opam clean --switch=catala -a -c -s -r
+
+ENV PATH="/opt/opam/catala/bin:${PATH}"

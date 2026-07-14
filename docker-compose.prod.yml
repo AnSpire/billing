@@ -1,6 +1,12 @@
 # Деплой на сервер: API + Postgres.
 #
-#   docker compose -f docker-compose.prod.yml up -d --build
+#   make toolchain-image   # ОДИН раз на машину: базовый образ с Catala (~40 мин)
+#   make deploy            # = docker compose -f docker-compose.prod.yml up -d --build
+#
+# Compose базовый образ НЕ собирает — Dockerfile просто делает от него FROM.
+# Без `make toolchain-image` сборка падает на "pull access denied for
+# billing-catala-toolchain". Под sudo и под rootless-docker образы раздельные:
+# собирать базу надо тем же демоном, которым потом деплоишь.
 #
 # Отличия от docker-compose.yml (тот — только dev-база для локальных тестов):
 # здесь есть сам сервис, порт БД наружу не публикуется, пароль берётся из
