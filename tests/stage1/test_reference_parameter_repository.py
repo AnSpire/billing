@@ -152,6 +152,19 @@ def test_correct_closes_old_belief_and_as_of_tx_query_returns_history(db_connect
     assert old_as_of_registration is not None
     assert old_as_of_registration.version_id == old_version.version_id
 
+    # Обе оси независимы, и клетка "свежий as_of × старая valid_on" — не дыра.
+    # Коррекция действует с 2026-06-01 и про март 2024 ничего не говорила,
+    # поэтому СЕГОДНЯ система обязана по-прежнему отвечать 0.20 на вопрос
+    # "какая ставка действовала в марте 2024?". Именно этот вопрос задаёт
+    # пересчёт старого периода; без переутверждения обрезка тут был бы None,
+    # и пересчёт падал бы с UnresolvedReferenceParameterError.
+    believed_today_about_2024 = repo.resolve(
+        "vat_rate", "RU", valid_on=_dt(2024, 3, 1), as_of_tx=_dt(2026, 7, 11)
+    )
+    assert believed_today_about_2024 is not None
+    assert believed_today_about_2024.value.as_scalar() == Decimal("0.20")
+    assert believed_today_about_2024.validity.valid_to == _dt(2026, 6, 1)
+
 
 def test_repeal_truncates_valid_to_via_repository(db_connection) -> None:
     repo = PostgresReferenceParameterRepository(db_connection)

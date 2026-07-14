@@ -64,11 +64,15 @@ class PostgresReferenceParameterRepository(ReferenceParameterRepository):
     ) -> tuple[ParameterValueVersion, ReferenceParameterCorrected]:
         aggregate = ReferenceParameter(key=key, jurisdiction=jurisdiction)
         superseded = self._find_actual_overlapping(key, jurisdiction, validity)
-        version, event = aggregate.correct(
+        version, remainders, event = aggregate.correct(
             value, validity, provenance, now=now, superseded=superseded
         )
         self._close(superseded, tx_to=now)
         self._insert(version)
+        # Непокрытые коррекцией куски старых интервалов остаются действующими —
+        # иначе в актуальном tx-срезе образуется дыра по valid-time.
+        for remainder in remainders:
+            self._insert(remainder)
         return version, event
 
     def repeal(

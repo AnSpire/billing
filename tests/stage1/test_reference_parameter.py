@@ -60,7 +60,7 @@ def test_correct_closes_superseded_and_produces_new_actual_version() -> None:
         now=_dt(2024, 1, 1),
     )
 
-    new_version, event = param.correct(
+    new_version, remainders, event = param.correct(
         ParameterValue.scalar(Decimal("0.10")),
         TemporalValidity(valid_from=_dt(2026, 6, 1)),
         _provenance("vat_rate law amendment"),
@@ -74,6 +74,42 @@ def test_correct_closes_superseded_and_produces_new_actual_version() -> None:
     assert event.superseded_version_ids == (old_version.version_id,)
     # Correct не трогает старую версию — она не мутирует, это работа репозитория.
     assert old_version.is_actual
+
+    # Коррекция накрыла [2026-06-01, ∞) — но старая версия действовала с
+    # 2024-01-01, и про 2024-2026 коррекция ничего не говорила. Этот кусок
+    # переутверждается как актуальный, иначе в valid-time образуется дыра.
+    assert len(remainders) == 1
+    head = remainders[0]
+    assert head.is_actual
+    assert head.value.as_scalar() == Decimal("0.20")  # значение старое
+    assert head.validity.valid_from == _dt(2024, 1, 1)
+    assert head.validity.valid_to == _dt(2026, 6, 1)  # обрезан началом коррекции
+
+
+def test_correction_bounded_on_both_sides_reasserts_head_and_tail() -> None:
+    """Коррекция «окном» внутри действующего интервала оставляет два обрезка."""
+    param = ReferenceParameter(key="vat_rate", jurisdiction="RU")
+    old_version, _ = param.register_value(
+        ParameterValue.scalar(Decimal("0.20")),
+        TemporalValidity(valid_from=_dt(2024, 1, 1), valid_to=_dt(2027, 1, 1)),
+        _provenance(),
+        now=_dt(2024, 1, 1),
+    )
+
+    _new_version, remainders, _event = param.correct(
+        ParameterValue.scalar(Decimal("0.10")),
+        TemporalValidity(valid_from=_dt(2025, 1, 1), valid_to=_dt(2026, 1, 1)),
+        _provenance("temporary rate cut"),
+        now=_dt(2026, 7, 10),
+        superseded=[old_version],
+    )
+
+    ranges = sorted((r.validity.valid_from, r.validity.valid_to) for r in remainders)
+    assert ranges == [
+        (_dt(2024, 1, 1), _dt(2025, 1, 1)),  # голова до коррекции
+        (_dt(2026, 1, 1), _dt(2027, 1, 1)),  # хвост после коррекции
+    ]
+    assert all(r.value.as_scalar() == Decimal("0.20") for r in remainders)
 
 
 def test_repeal_truncates_valid_to_without_changing_value() -> None:

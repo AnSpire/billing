@@ -206,6 +206,15 @@ class ReferenceParameter:
         модуля). Их ``tx_to`` закрывается моментом ``now`` — старые строки не
         удаляются и не мутируют своё ``valid_range``, они остаются
         историческим фактом ("что тогда считали правдой").
+
+        Закрытие по tx-времени бьёт по версии ЦЕЛИКОМ, а коррекция могла
+        покрыть лишь часть её valid-интервала. Непокрытая часть — не история:
+        это по-прежнему действующая правда о том отрезке, которую коррекция не
+        отменяла. Поэтому вместе с новой версией возвращаем ``remainders`` —
+        переутверждение необрезанных кусков (``uncorrected_remainders``). Без
+        них ретроактивная коррекция «с июля» пробивала бы дыру в июне: параметр
+        перестал бы резолвиться на прошлые периоды, и пересчёт за них падал бы
+        с ``UnresolvedReferenceParameterError``.
         """
         version = ParameterValueVersion(
             version_id=uuid.uuid4(),
@@ -217,6 +226,7 @@ class ReferenceParameter:
             tx_to=None,
             provenance=provenance,
         )
+        remainders = self.uncorrected_remainders(validity, superseded=superseded, now=now)
         event = ReferenceParameterCorrected(
             key=self.key,
             jurisdiction=self.jurisdiction,
@@ -225,7 +235,57 @@ class ReferenceParameter:
             valid_from=validity.valid_from,
             valid_to=validity.valid_to,
         )
-        return version, event
+        return version, remainders, event
+
+    def uncorrected_remainders(
+        self,
+        correction: TemporalValidity,
+        *,
+        superseded: Sequence[ParameterValueVersion],
+        now: datetime,
+    ) -> tuple[ParameterValueVersion, ...]:
+        """Куски valid-интервалов ``superseded``, которых коррекция НЕ касается,
+        переутверждённые как актуальные версии (свежий ``tx_from``, старое
+        значение и провенанс — норма-то не менялась именно на этом отрезке).
+
+        Тот же приём, что в ``repeal``: «изменение через INSERT, обрезающий
+        интервал», только здесь обрезков может быть два — голова до начала
+        коррекции и хвост после её конца (если коррекция ограничена сверху).
+        """
+        remainders: list[ParameterValueVersion] = []
+        for old in superseded:
+            if old.validity.valid_from < correction.valid_from:
+                remainders.append(
+                    self._reassert(old, valid_from=old.validity.valid_from,
+                                   valid_to=correction.valid_from, now=now)
+                )
+            if correction.valid_to is not None and (
+                old.validity.valid_to is None or old.validity.valid_to > correction.valid_to
+            ):
+                remainders.append(
+                    self._reassert(old, valid_from=correction.valid_to,
+                                   valid_to=old.validity.valid_to, now=now)
+                )
+        return tuple(remainders)
+
+    def _reassert(
+        self,
+        old: ParameterValueVersion,
+        *,
+        valid_from: datetime,
+        valid_to: datetime | None,
+        now: datetime,
+    ) -> ParameterValueVersion:
+        return ParameterValueVersion(
+            version_id=uuid.uuid4(),
+            key=self.key,
+            jurisdiction=self.jurisdiction,
+            value=old.value,
+            validity=TemporalValidity(valid_from=valid_from, valid_to=valid_to),
+            tx_from=now,
+            tx_to=None,
+            provenance=old.provenance,
+        )
 
     def repeal(
         self,
