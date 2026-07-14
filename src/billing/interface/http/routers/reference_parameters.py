@@ -55,12 +55,37 @@ def _provenance(p: ProvenanceIn) -> Provenance:
     )
 
 
-@router.post("", status_code=201, response_model=VersionIdOut)
+@router.post(
+    "",
+    status_code=201,
+    response_model=VersionIdOut,
+    summary="Зарегистрировать новую версию справочного параметра",
+    responses={
+        409: {"description": "Интервал valid-time пересекается с уже существующей версией"},
+        422: {"description": "Не указана провенанс-ссылка на нормативный документ"},
+    },
+)
 def register(
     body: RegisterIn,
     conn: Connection = Depends(db_connection),
     now: datetime = Depends(get_now),
 ) -> VersionIdOut:
+    """Заводит версию параметра `key` в юрисдикции `jurisdiction`.
+
+    Параметр битемпоральный: `valid_from`/`valid_to` задают **valid-time** (когда
+    значение действует по закону), время записи (**tx-time**) проставляется само.
+    Открытый интервал — `valid_to: null`.
+
+    `provenance` обязателен: у каждого значения должна быть ссылка на нормативный
+    акт (`regulation_ref`), идентификатор документа и дата вступления в силу —
+    без этого домен отклонит регистрацию (`422`).
+
+    Пересечение valid-time с уже существующей версией того же ключа — конфликт
+    (`409`). Чтобы заменить действующее значение задним числом, используйте не
+    этот эндпоинт, а `POST /{key}/{jurisdiction}/corrections`.
+
+    Возвращает `version_id` созданной версии.
+    """
     version = PostgresReferenceParameterRepository(conn).register_value(
         body.key,
         body.jurisdiction,
@@ -86,7 +111,15 @@ class CorrectionOut(BaseModel):
     dead_letters: int
 
 
-@router.post("/{key}/{jurisdiction}/corrections", response_model=CorrectionOut)
+@router.post(
+    "/{key}/{jurisdiction}/corrections",
+    response_model=CorrectionOut,
+    summary="Ретроактивно исправить значение параметра (запускает веерный пересчёт)",
+    responses={
+        404: {"description": "Параметр key/jurisdiction не зарегистрирован"},
+        422: {"description": "Не указана провенанс-ссылка на нормативный документ"},
+    },
+)
 def correct(
     key: str,
     jurisdiction: str,
@@ -95,6 +128,30 @@ def correct(
     config=Depends(settings),
     now: datetime = Depends(get_now),
 ) -> CorrectionOut:
+    """Исправляет значение параметра задним числом и пересчитывает всё, что на нём стояло.
+
+    Самый «тяжёлый» эндпоинт API. Отличие от `POST /reference-parameters`: там
+    регистрируется новая версия на непересекающемся интервале, здесь — новое
+    значение **поверх** уже действовавшего (типовой случай: регулятор задним
+    числом поменял ставку). Старые версии не удаляются, а помечаются
+    superseded — история остаётся восстановимой (битемпоральность).
+
+    Побочный эффект — сага: коррекция порождает событие
+    `ReferenceParameterCorrected`, диспетчер веером пересчитывает **только те**
+    начисления, чьи тарифы реально читают этот параметр, и выпускает по ним
+    корректирующие квитанции. Сбой по отдельному лицевому счёту не роняет весь
+    веер: такой счёт уходит в dead-letter, остальные досчитываются.
+
+    Коррекция коммитится до диспатча, чтобы обработчики саги (на своих
+    соединениях) увидели уже закоммиченную версию.
+
+    В ответе:
+    - `version_id` — новая версия параметра;
+    - `superseded_count` — сколько версий она перекрыла;
+    - `recalculated_versions`, `dead_letters` — зарезервированы под сводку веера,
+      сейчас всегда пусты/нули; фактический результат пересчёта смотрите в
+      `GET /assessments/{account_id}/{period}` и в таблице dead-letter.
+    """
     # Пишем коррекцию в своей транзакции и коммитим ДО dispatch: обработчик
     # веера читает уже закоммиченную версию (PRESENTATION.md §6).
     with new_connection(config.database_url) as conn:
@@ -122,7 +179,18 @@ class RepealIn(BaseModel):
     provenance: ProvenanceIn
 
 
-@router.post("/{key}/{jurisdiction}/repeal", response_model=VersionIdOut)
+@router.post(
+    "/{key}/{jurisdiction}/repeal",
+    response_model=VersionIdOut,
+    summary="Отменить параметр начиная с даты",
+    responses={
+        404: {"description": "Параметр key/jurisdiction не зарегистрирован"},
+        422: {
+            "description": "Дата отмены раньше начала действующей версии "
+            "или не указан провенанс"
+        },
+    },
+)
 def repeal(
     key: str,
     jurisdiction: str,
@@ -130,13 +198,30 @@ def repeal(
     conn: Connection = Depends(db_connection),
     now: datetime = Depends(get_now),
 ) -> VersionIdOut:
+    """Закрывает действие параметра начиная с `repeal_from` (нормативный акт утратил силу).
+
+    Значение не стирается: действующая версия получает конечную границу
+    valid-time, поэтому расчёты за прошлые периоды продолжают резолвиться как
+    раньше. После `repeal_from` параметр перестаёт резолвиться — начисление по
+    тарифу, который его читает, упадёт с `422`
+    (`UnresolvedReferenceParameterError`).
+
+    Отмена сама по себе **не** запускает пересчёт (в отличие от `corrections`):
+    речь о будущем, а не об исправлении прошлого. `repeal_from` раньше начала
+    действующей версии — `422`.
+    """
     version = PostgresReferenceParameterRepository(conn).repeal(
         key, jurisdiction, body.repeal_from, _provenance(body.provenance), now=now
     )
     return VersionIdOut(version_id=str(version.version_id))
 
 
-@router.get("/{key}/{jurisdiction}", response_model=RefParamVersionOut)
+@router.get(
+    "/{key}/{jurisdiction}",
+    response_model=RefParamVersionOut,
+    summary="Разрешить значение параметра на момент времени (битемпорально)",
+    responses={404: {"description": "На заданный valid_on/as_of параметр не резолвится"}},
+)
 def resolve(
     key: str,
     jurisdiction: str,
@@ -145,6 +230,22 @@ def resolve(
     conn: Connection = Depends(db_connection),
     now: datetime = Depends(get_now),
 ) -> RefParamVersionOut:
+    """Возвращает версию параметра, действовавшую в заданной точке битемпорального времени.
+
+    Две независимые оси:
+    - `valid_on` (обязательный) — **valid-time**: на какой момент реального мира
+      нас интересует значение («какая ставка НДС действовала в июне 2026?»);
+    - `as_of` (опционально, по умолчанию «сейчас») — **tx-time**: по состоянию
+      базы на какой момент отвечаем («что мы *знали* об этой ставке до того, как
+      прилетела ретроактивная коррекция?»).
+
+    Фиксируя `as_of` в прошлом, можно воспроизвести расчёт ровно так, как он
+    считался тогда, — даже если параметр с тех пор корректировали. Именно этим
+    механизмом пользуется пересчёт начислений.
+
+    Если на заданной паре координат ни одна версия не действует (не заведена,
+    отменена или ещё не была записана) — `404`.
+    """
     from fastapi import HTTPException
 
     resolved = PostgresReferenceParameterRepository(conn).resolve(

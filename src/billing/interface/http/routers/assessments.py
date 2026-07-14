@@ -82,13 +82,51 @@ class CalculateOut(BaseModel):
     invoice: InvoiceOut | None
 
 
-@router.post("", status_code=201, response_model=CalculateOut)
+@router.post(
+    "",
+    status_code=201,
+    response_model=CalculateOut,
+    summary="Начислить за период: расчёт + квитанция + проводка (сага)",
+    responses={
+        404: {"description": "Версия тарифа не найдена"},
+        409: {
+            "description": "Тариф не опубликован либо за период уже есть активное "
+            "начисление (для пересчёта используйте /recalculate)"
+        },
+        422: {"description": "Справочный параметр не резолвится на дату периода"},
+        500: {"description": "Сага не довела цепочку до конца (артефакт/инвариант)"},
+    },
+)
 def calculate(
     body: CalculateIn,
     dispatcher=Depends(get_dispatcher),
     config=Depends(settings),
     now: datetime = Depends(get_now),
 ) -> CalculateOut:
+    """Главный вход в биллинг: считает начисление за период и прогоняет полную сагу.
+
+    Один вызов — три шага, каждый в своём агрегате:
+    1. **Assessment** — берём потребление за `period` по метрике `metric`,
+       резолвим справочные параметры на дату периода, считаем сумму движком
+       опубликованного тарифа (Catala-артефакт или stub — по виду формы тарифа).
+    2. **Invoice.issue** — сага выпускает квитанцию с замороженной копией строк.
+    3. **Account.post_charge** — проводка в журнал лицевого счёта.
+
+    Начисление коммитится **до** диспатча саги: обработчики работают на своих
+    соединениях и незакоммиченное просто не увидели бы.
+
+    Тариф обязан быть в статусе `published` (`409` иначе). Повторный вызов за тот
+    же период — тоже `409` (активное начисление уже есть); чтобы пересчитать,
+    используйте `POST /assessments/{account_id}/{period}/recalculate`.
+
+    `invoice` в ответе — `null`, если сага по какой-то причине не дошла до выпуска
+    квитанции; начисление при этом сохранено.
+
+    ⚠️ `tariff_id`/`tariff_version` передаются в теле: в домене пока нет агрегата,
+    хранящего связку «лицевой счёт → тариф» (осознанное упрощение, см.
+    `application/billing_calculation.py`). Вызывающий сам решает, по какому тарифу
+    считать.
+    """
     period = BillingPeriod.parse(body.period)
 
     with new_connection(config.database_url) as conn:
@@ -127,7 +165,17 @@ class RecalculateOut(BaseModel):
     correcting_invoice: InvoiceOut | None
 
 
-@router.post("/{account_id}/{period}/recalculate", response_model=RecalculateOut)
+@router.post(
+    "/{account_id}/{period}/recalculate",
+    response_model=RecalculateOut,
+    summary="Пересчитать период: новая версия начисления + корректирующая квитанция",
+    responses={
+        404: {"description": "Версия тарифа не найдена или за период нечего пересчитывать"},
+        409: {"description": "Тариф не опубликован либо переход состояния недопустим"},
+        422: {"description": "Справочный параметр не резолвится на дату периода"},
+        500: {"description": "Сага не довела цепочку до конца"},
+    },
+)
 def recalculate(
     account_id: str,
     period: str,
@@ -136,6 +184,23 @@ def recalculate(
     config=Depends(settings),
     now: datetime = Depends(get_now),
 ) -> RecalculateOut:
+    """Пересчитывает уже начисленный период, ничего не затирая.
+
+    Ничего не перезаписывается: создаётся **новая версия** начисления (`version`
+    инкрементируется, прежняя остаётся в истории), а расхождение оформляется
+    отдельной **корректирующей квитанцией** и компенсирующей проводкой
+    (`Account.post_correction`). Так журнал и выданные клиенту документы остаются
+    неизменными задним числом.
+
+    Типовые поводы: пришли уточнённые показания, либо поменяли тариф. Если же
+    исправляют справочный параметр (ставку, норматив) — этот эндпоинт руками
+    дёргать не нужно: `POST /reference-parameters/{key}/{jurisdiction}/corrections`
+    сам веером пересчитает все затронутые начисления.
+
+    В ответе `diff` показывает, что именно изменилось между старой и новой
+    версией (построчно и по итоговой сумме) — это и есть содержание
+    корректирующей квитанции.
+    """
     billing_period = BillingPeriod.parse(period)
 
     with new_connection(config.database_url) as conn:
@@ -162,12 +227,29 @@ def recalculate(
     )
 
 
-@router.get("/{account_id}/{period}", response_model=AssessmentOut)
+@router.get(
+    "/{account_id}/{period}",
+    response_model=AssessmentOut,
+    summary="Активная (последняя) версия начисления за период",
+    responses={404: {"description": "За (account_id, period) нет активного начисления"}},
+)
 def get_active(
     account_id: str,
     period: str,
     config=Depends(settings),
 ) -> AssessmentOut:
+    """Возвращает **активную** версию начисления за период — актуальную на сейчас.
+
+    Версий у периода может быть много (каждый пересчёт добавляет новую), активная
+    всегда ровно одна — последняя. Именно она отражает, сколько лицевому счёту
+    начислено за период с учётом всех коррекций.
+
+    В ответе — строки расчёта, итог и `version`. Номер версии удобно скормить в
+    `GET /assessments/{account_id}/{period}/diff`, чтобы посмотреть, чем она
+    отличается от предыдущей.
+
+    Период не начислялся (или все версии вытеснены) — `404`.
+    """
     billing_period = BillingPeriod.parse(period)
     with new_connection(config.database_url) as conn:
         assessment = PostgresBillingAssessmentRepository(conn).get_active(account_id, billing_period)
@@ -176,14 +258,31 @@ def get_active(
     return assessment_out(assessment)
 
 
-@router.get("/{account_id}/{period}/diff", response_model=AssessmentDiffOut)
+@router.get(
+    "/{account_id}/{period}/diff",
+    response_model=AssessmentDiffOut,
+    summary="Сравнить две версии начисления за период",
+    responses={404: {"description": "Версия v1 или v2 за этот период не найдена"}},
+)
 def diff(
     account_id: str,
     period: str,
-    v1: int = Query(...),
-    v2: int = Query(...),
+    v1: int = Query(..., description="номер исходной версии начисления"),
+    v2: int = Query(..., description="номер версии, с которой сравниваем"),
     config=Depends(settings),
 ) -> AssessmentDiffOut:
+    """Показывает, чем версия `v2` начисления отличается от версии `v1`.
+
+    Это аудиторский эндпоинт и главный ответ на вопрос «почему сумма изменилась»:
+    видно, какие строки расчёта появились, исчезли или поменяли значение, и как
+    это сложилось в дельту итога. Ровно эта дельта уходит в корректирующую
+    квитанцию.
+
+    Версии начислений неизменяемы, так что диф между двумя номерами всегда
+    воспроизводим — им можно ссылаться в разборе обращения клиента.
+
+    Порядок важен: `v1` — «было», `v2` — «стало». Отсутствующий номер версии — `404`.
+    """
     billing_period = BillingPeriod.parse(period)
     with new_connection(config.database_url) as conn:
         repo = PostgresBillingAssessmentRepository(conn)
